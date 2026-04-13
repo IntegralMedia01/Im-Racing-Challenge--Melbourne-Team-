@@ -1,0 +1,1062 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Drift — IM Racing Challenge</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #0a0a1a;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    user-select: none;
+  }
+
+  canvas { display: block; }
+
+  #hud {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 24px;
+    z-index: 20;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  #hud.visible { opacity: 1; }
+
+  .hud-item {
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(39, 193, 244, 0.3);
+    border-radius: 10px;
+    padding: 8px 18px;
+    text-align: center;
+    backdrop-filter: blur(10px);
+  }
+  .hud-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: rgba(39, 193, 244, 0.7);
+    margin-bottom: 2px;
+  }
+  .hud-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #speedometer {
+    position: fixed;
+    bottom: 30px;
+    right: 40px;
+    z-index: 20;
+    opacity: 0;
+    transition: opacity 0.5s;
+  }
+  #speedometer.visible { opacity: 1; }
+
+  #start-screen {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 30;
+    background: radial-gradient(ellipse at center, rgba(39,193,244,0.08) 0%, rgba(10,10,26,0.95) 70%);
+  }
+
+  #start-screen h1 {
+    font-size: 72px;
+    font-weight: 800;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 8px;
+    margin-bottom: 8px;
+    text-shadow: 0 0 40px rgba(39,193,244,0.5), 0 0 80px rgba(39,193,244,0.2);
+  }
+
+  #start-screen .subtitle {
+    font-size: 14px;
+    letter-spacing: 6px;
+    text-transform: uppercase;
+    color: rgba(39,193,244,0.7);
+    margin-bottom: 50px;
+  }
+
+  #start-screen .prompt {
+    font-size: 16px;
+    color: rgba(255,255,255,0.6);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  .controls-info {
+    margin-top: 40px;
+    display: flex;
+    gap: 30px;
+  }
+  .control-key {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .key-box {
+    width: 44px; height: 44px;
+    border: 2px solid rgba(39,193,244,0.4);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: rgba(39,193,244,0.8);
+    font-size: 18px;
+    background: rgba(39,193,244,0.05);
+  }
+  .key-label {
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.4);
+  }
+
+  #countdown {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 120px;
+    font-weight: 800;
+    color: #fff;
+    z-index: 25;
+    opacity: 0;
+    text-shadow: 0 0 60px rgba(39,193,244,0.8);
+    pointer-events: none;
+  }
+
+  #finish-screen {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 30;
+    background: rgba(10,10,26,0.92);
+    backdrop-filter: blur(5px);
+  }
+
+  #finish-screen h2 {
+    font-size: 56px;
+    font-weight: 800;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 6px;
+    margin-bottom: 10px;
+    text-shadow: 0 0 40px rgba(39,193,244,0.5);
+  }
+
+  .result-position {
+    font-size: 20px;
+    color: rgba(39,193,244,0.8);
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    margin-bottom: 30px;
+  }
+
+  .result-stats {
+    display: flex;
+    gap: 40px;
+    margin-bottom: 40px;
+  }
+  .result-stat { text-align: center; }
+  .result-stat .val { font-size: 36px; font-weight: 700; color: #fff; }
+  .result-stat .lbl { font-size: 10px; letter-spacing: 2px; text-transform: uppercase; color: rgba(39,193,244,0.6); margin-top: 4px; }
+
+  .restart-prompt {
+    font-size: 16px;
+    color: rgba(255,255,255,0.5);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 0.5; }
+    50% { opacity: 1; }
+  }
+
+  @keyframes countPop {
+    0% { transform: translate(-50%, -50%) scale(0.5); opacity: 0; }
+    30% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
+    100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="hud-item">
+    <div class="hud-label">Position</div>
+    <div class="hud-value" id="hud-position">1st</div>
+  </div>
+  <div class="hud-item">
+    <div class="hud-label">Lap</div>
+    <div class="hud-value" id="hud-lap">1 / 3</div>
+  </div>
+  <div class="hud-item">
+    <div class="hud-label">Time</div>
+    <div class="hud-value" id="hud-time">0:00.0</div>
+  </div>
+  <div class="hud-item">
+    <div class="hud-label">Speed</div>
+    <div class="hud-value" id="hud-speed">0 km/h</div>
+  </div>
+</div>
+
+<canvas id="speedometer" width="180" height="180"></canvas>
+
+<div id="start-screen">
+  <h1>Neon Drift</h1>
+  <div class="subtitle">Integral Media Racing Challenge</div>
+  <div class="prompt">Press SPACE to start</div>
+  <div class="controls-info">
+    <div class="control-key">
+      <div class="key-box">&#9650;</div>
+      <div class="key-label">Accelerate</div>
+    </div>
+    <div class="control-key">
+      <div class="key-box">&#9660;</div>
+      <div class="key-label">Brake</div>
+    </div>
+    <div class="control-key">
+      <div class="key-box">&#9664;</div>
+      <div class="key-label">Steer Left</div>
+    </div>
+    <div class="control-key">
+      <div class="key-box">&#9654;</div>
+      <div class="key-label">Steer Right</div>
+    </div>
+  </div>
+</div>
+
+<div id="countdown"></div>
+
+<div id="finish-screen">
+  <h2 id="finish-title">Race Complete</h2>
+  <div class="result-position" id="finish-position"></div>
+  <div class="result-stats">
+    <div class="result-stat">
+      <div class="val" id="finish-time">0:00.0</div>
+      <div class="lbl">Total Time</div>
+    </div>
+    <div class="result-stat">
+      <div class="val" id="finish-best">0:00.0</div>
+      <div class="lbl">Best Lap</div>
+    </div>
+  </div>
+  <div class="restart-prompt">Press SPACE to race again</div>
+</div>
+
+<script>
+// ============================================================
+// NEON DRIFT — First-person pseudo-3D racing game
+// Built for the IM Racing Challenge — Integral Media
+// ============================================================
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const spdCanvas = document.getElementById('speedometer');
+const spdCtx = spdCanvas.getContext('2d');
+
+function resize() {
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- CONSTANTS ---
+const TOTAL_LAPS = 3;
+const SEG_LENGTH = 200;       // length of each road segment in world units
+const ROAD_WIDTH = 2400;      // road width in world units
+const CAMERA_HEIGHT = 1200;
+const CAMERA_DEPTH = 0.84;    // camera FOV (lower = wider)
+const DRAW_DISTANCE = 200;    // how many segments ahead to draw
+const NUM_AI = 3;
+
+// Colours
+const SKY_TOP = '#000814';
+const SKY_BOT = '#001d3d';
+const NEON_BLUE = '#27C1F4';
+const NEON_BLUE_DIM = 'rgba(39,193,244,0.15)';
+const DARK_ROAD = '#111125';
+const DARKER_ROAD = '#0d0d1e';
+const RUMBLE_BRIGHT = '#27C1F4';
+const RUMBLE_DIM = '#0a1628';
+const GRASS_BRIGHT = '#050a14';
+const GRASS_DIM = '#070e1a';
+const LANE_BRIGHT = 'rgba(39,193,244,0.25)';
+
+// --- BUILD ROAD ---
+const segments = [];
+const totalSegments = 1600;
+
+function addSegment(curve, hill) {
+  const n = segments.length;
+  segments.push({
+    index: n,
+    p: { world: { x: 0, y: lastY(), z: n * SEG_LENGTH }, camera: {}, screen: {} },
+    curve: curve,
+    hill: hill,
+    color: {}
+  });
+}
+
+function lastY() {
+  return segments.length > 0 ? segments[segments.length - 1].p.world.y : 0;
+}
+
+// Road builder — creates a varied track
+function buildRoad() {
+  segments.length = 0;
+
+  // Functions to add road sections
+  function addStraight(num = 50) {
+    for (let i = 0; i < num; i++) addSegment(0, 0);
+  }
+
+  function addCurve(num = 50, curve = 2, hill = 0) {
+    // Ease in
+    for (let i = 0; i < 25; i++) addSegment((i / 25) * curve, hill);
+    // Hold
+    for (let i = 0; i < num; i++) addSegment(curve, hill);
+    // Ease out
+    for (let i = 0; i < 25; i++) addSegment((1 - i / 25) * curve, hill);
+  }
+
+  function addHill(num = 50, height = 30) {
+    for (let i = 0; i < num; i++) addSegment(0, Math.sin(i / num * Math.PI) * height);
+  }
+
+  function addSCurve() {
+    addCurve(30, 3, 0);
+    addCurve(30, -3, 0);
+  }
+
+  // Build the circuit
+  addStraight(80);                 // Start straight
+  addCurve(60, 2.5, 10);          // Gentle right + hill
+  addStraight(40);
+  addHill(40, 40);                 // Big hill
+  addCurve(50, -3, -5);           // Sharp left + downhill
+  addStraight(30);
+  addSCurve();                     // S-curve
+  addStraight(50);
+  addCurve(40, 4, 0);             // Hard right
+  addHill(30, -30);               // Dip
+  addStraight(30);
+  addCurve(60, -2, 15);           // Long left + uphill
+  addStraight(40);
+  addCurve(30, 3.5, -10);         // Right + downhill
+  addSCurve();
+  addHill(50, 25);
+  addCurve(40, -4, 0);            // Hard left
+  addStraight(60);
+  addCurve(35, 2, 20);
+  addStraight(40);
+  addHill(30, -20);
+  addCurve(50, -2.5, 0);
+  addStraight(100);               // Long final straight
+
+  // Pad to total
+  while (segments.length < totalSegments) addStraight(1);
+
+  // Calculate cumulative curve for x offset and set colours
+  let cumCurve = 0;
+  for (let i = 0; i < segments.length; i++) {
+    cumCurve += segments[i].curve;
+    segments[i].p.world.x = cumCurve * SEG_LENGTH;
+
+    // Alternating segment colours (for stripe effect)
+    const alt = Math.floor(i / 4) % 2;
+    segments[i].color = {
+      road: alt ? DARK_ROAD : DARKER_ROAD,
+      rumble: alt ? RUMBLE_BRIGHT : RUMBLE_DIM,
+      grass: alt ? GRASS_BRIGHT : GRASS_DIM,
+      lane: alt ? LANE_BRIGHT : 'transparent'
+    };
+  }
+}
+
+buildRoad();
+
+// --- STARS ---
+const stars = [];
+for (let i = 0; i < 150; i++) {
+  stars.push({
+    x: Math.random(),
+    y: Math.random() * 0.45,
+    size: 0.5 + Math.random() * 1.5,
+    alpha: 0.3 + Math.random() * 0.5,
+    twinkle: Math.random() * Math.PI * 2
+  });
+}
+
+// Neon city background elements
+const buildings = [];
+for (let i = 0; i < 30; i++) {
+  buildings.push({
+    x: Math.random(),
+    width: 0.015 + Math.random() * 0.04,
+    height: 0.05 + Math.random() * 0.2,
+    glow: Math.random() > 0.6
+  });
+}
+
+// --- PLAYER STATE ---
+let playerPos = 0;          // z position along the track
+let playerX = 0;            // x offset from centre (-1 to 1 = road edge)
+let playerSpeed = 0;
+let playerLap = 0;
+let lapStartTime = 0;
+let bestLap = Infinity;
+let lapTimes = [];
+
+const MAX_SPEED = SEG_LENGTH * 60;   // ~ 300 km/h feel
+const ACCEL = MAX_SPEED / 120;
+const BRAKE = MAX_SPEED / 60;
+const OFFROAD_DECEL = MAX_SPEED / 30;
+const NATURAL_DECEL = MAX_SPEED / 600;
+const CENTRIFUGAL = 0.35;
+
+// --- AI CARS ---
+let aiCars = [];
+
+function createAI() {
+  const colors = [
+    { body: '#ff3344', trail: 'rgba(255,51,68,' },
+    { body: '#33ff55', trail: 'rgba(51,255,85,' },
+    { body: '#cc44ff', trail: 'rgba(204,68,255,' },
+  ];
+  aiCars = [];
+  for (let i = 0; i < NUM_AI; i++) {
+    aiCars.push({
+      pos: totalSegments * SEG_LENGTH - (i + 1) * SEG_LENGTH * 15,
+      x: (Math.random() - 0.5) * 1.2,
+      speed: MAX_SPEED * (0.6 + Math.random() * 0.15),
+      color: colors[i].body,
+      trailColor: colors[i].trail,
+      lap: 0,
+      finished: false,
+      finishTime: 0,
+      wobble: Math.random() * Math.PI * 2,
+      targetX: (Math.random() - 0.5) * 0.8
+    });
+  }
+}
+
+createAI();
+
+// --- GAME STATE ---
+let gameState = 'menu';
+let raceTime = 0;
+let lastTS = 0;
+
+// --- INPUT ---
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (e.key === ' ') {
+    if (gameState === 'menu') startCountdown();
+    else if (gameState === 'finished') restartRace();
+  }
+});
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// --- COUNTDOWN ---
+function startCountdown() {
+  gameState = 'countdown';
+  document.getElementById('start-screen').style.display = 'none';
+  document.getElementById('hud').classList.add('visible');
+  document.getElementById('speedometer').classList.add('visible');
+
+  let count = 3;
+  const el = document.getElementById('countdown');
+
+  function tick() {
+    if (count > 0) {
+      el.textContent = count;
+      el.style.opacity = '1';
+      el.style.animation = 'countPop 0.9s ease-out forwards';
+      count--;
+      setTimeout(() => {
+        el.style.animation = 'none';
+        void el.offsetHeight;
+        setTimeout(tick, 100);
+      }, 800);
+    } else {
+      el.textContent = 'GO!';
+      el.style.color = NEON_BLUE;
+      el.style.opacity = '1';
+      el.style.animation = 'countPop 0.9s ease-out forwards';
+      gameState = 'racing';
+      raceTime = 0;
+      lapStartTime = 0;
+      setTimeout(() => { el.style.opacity = '0'; el.style.color = '#fff'; }, 800);
+    }
+  }
+  tick();
+}
+
+function restartRace() {
+  gameState = 'menu';
+  raceTime = 0;
+  bestLap = Infinity;
+  lapTimes = [];
+  playerPos = 0;
+  playerX = 0;
+  playerSpeed = 0;
+  playerLap = 0;
+
+  document.getElementById('finish-screen').style.display = 'none';
+  document.getElementById('start-screen').style.display = 'flex';
+  document.getElementById('hud').classList.remove('visible');
+  document.getElementById('speedometer').classList.remove('visible');
+
+  createAI();
+}
+
+function formatTime(ms) {
+  const s = ms / 1000;
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`;
+}
+
+function showFinish() {
+  gameState = 'finished';
+
+  // Determine position
+  const allFinished = [
+    { time: raceTime, isPlayer: true },
+    ...aiCars.map(c => ({ time: c.finished ? c.finishTime : Infinity, isPlayer: false }))
+  ].sort((a, b) => a.time - b.time);
+
+  const pos = allFinished.findIndex(c => c.isPlayer) + 1;
+  const suffixes = ['1st', '2nd', '3rd', '4th'];
+  const titles = ['You Win!', 'Runner Up!', 'Third Place!', 'Keep Trying!'];
+
+  document.getElementById('finish-title').textContent = titles[pos - 1];
+  document.getElementById('finish-position').textContent = `You finished ${suffixes[pos - 1]}`;
+  document.getElementById('finish-time').textContent = formatTime(raceTime);
+  document.getElementById('finish-best').textContent = bestLap < Infinity ? formatTime(bestLap) : '--:--.-';
+  document.getElementById('finish-screen').style.display = 'flex';
+}
+
+// --- PROJECTION ---
+function project(point, camX, camY, camZ, depth) {
+  const hw = canvas.width / 2;
+  const hh = canvas.height / 2;
+
+  point.camera.x = (point.world.x || 0) - camX;
+  point.camera.y = (point.world.y || 0) - camY;
+  point.camera.z = (point.world.z || 0) - camZ;
+
+  if (point.camera.z <= 0) point.camera.z = 0.1;
+
+  point.screen.scale = depth / point.camera.z;
+  point.screen.x = hw + (point.screen.scale * point.camera.x * hw);
+  point.screen.y = hh - (point.screen.scale * point.camera.y * hh);
+  point.screen.w = point.screen.scale * ROAD_WIDTH * hw;
+}
+
+// --- DRAW POLYGON ---
+function drawPoly(x1, y1, w1, x2, y2, w2, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x1 - w1, y1);
+  ctx.lineTo(x1 + w1, y1);
+  ctx.lineTo(x2 + w2, y2);
+  ctx.lineTo(x2 - w2, y2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// --- DRAW SPRITE CAR (for AI cars in view) ---
+function drawCarSprite(x, y, scale, color, trailColor) {
+  const w = 60 * scale;
+  const h = 30 * scale;
+  if (w < 1) return;
+
+  // Glow
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 20 * scale;
+
+  // Body
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(x, y - h);
+  ctx.lineTo(x + w / 2, y - h * 0.4);
+  ctx.lineTo(x + w / 2, y + h * 0.3);
+  ctx.lineTo(x - w / 2, y + h * 0.3);
+  ctx.lineTo(x - w / 2, y - h * 0.4);
+  ctx.closePath();
+  ctx.fill();
+
+  // Windshield
+  ctx.fillStyle = 'rgba(39,193,244,0.4)';
+  ctx.fillRect(x - w * 0.3, y - h * 0.7, w * 0.6, h * 0.3);
+
+  // Tail lights
+  ctx.fillStyle = '#ff3333';
+  ctx.shadowColor = '#ff3333';
+  ctx.shadowBlur = 8 * scale;
+  ctx.fillRect(x - w / 2 + 2, y + h * 0.15, 4 * scale, 3 * scale);
+  ctx.fillRect(x + w / 2 - 2 - 4 * scale, y + h * 0.15, 4 * scale, 3 * scale);
+
+  ctx.shadowBlur = 0;
+}
+
+// --- DRAW PLAYER CAR (dashboard / bonnet view) ---
+function drawPlayerCar() {
+  const w = canvas.width;
+  const h = canvas.height;
+  const steer = ((keys['ArrowLeft'] || keys['a'] || keys['A']) ? -1 : 0) +
+                ((keys['ArrowRight'] || keys['d'] || keys['D']) ? 1 : 0);
+
+  // Dashboard / bonnet
+  const bonnetY = h * 0.78;
+  const bonnetH = h * 0.25;
+
+  // Bonnet shape
+  ctx.fillStyle = '#001a3a';
+  ctx.beginPath();
+  ctx.moveTo(w * 0.25, h);
+  ctx.lineTo(w * 0.35, bonnetY);
+  ctx.quadraticCurveTo(w * 0.5, bonnetY - 15, w * 0.65, bonnetY);
+  ctx.lineTo(w * 0.75, h);
+  ctx.closePath();
+  ctx.fill();
+
+  // Neon trim on bonnet
+  ctx.strokeStyle = NEON_BLUE;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = NEON_BLUE;
+  ctx.shadowBlur = 10;
+  ctx.beginPath();
+  ctx.moveTo(w * 0.35, bonnetY);
+  ctx.quadraticCurveTo(w * 0.5, bonnetY - 15, w * 0.65, bonnetY);
+  ctx.stroke();
+
+  // Side edges
+  ctx.beginPath();
+  ctx.moveTo(w * 0.25, h);
+  ctx.lineTo(w * 0.35, bonnetY);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(w * 0.75, h);
+  ctx.lineTo(w * 0.65, bonnetY);
+  ctx.stroke();
+
+  ctx.shadowBlur = 0;
+
+  // Steering wheel hint
+  const wheelX = w * 0.5 + steer * 15;
+  const wheelY = h * 0.92;
+  ctx.strokeStyle = 'rgba(39,193,244,0.3)';
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.arc(wheelX, wheelY, 30, Math.PI * 0.8, Math.PI * 2.2);
+  ctx.stroke();
+}
+
+// --- SPEEDOMETER ---
+function drawSpeedometer(speed) {
+  const c = spdCtx;
+  const w = 180, h = 180;
+  const cx = w / 2, cy = h / 2 + 10;
+  const r = 70;
+
+  c.clearRect(0, 0, w, h);
+
+  // Background
+  c.fillStyle = 'rgba(0,0,0,0.5)';
+  c.beginPath();
+  c.arc(cx, cy, r + 15, 0, Math.PI * 2);
+  c.fill();
+
+  // Outer ring
+  c.strokeStyle = 'rgba(39,193,244,0.2)';
+  c.lineWidth = 2;
+  c.beginPath();
+  c.arc(cx, cy, r + 10, Math.PI * 0.75, Math.PI * 2.25);
+  c.stroke();
+
+  // Speed arc
+  const maxAngle = Math.PI * 1.5;
+  const startAngle = Math.PI * 0.75;
+  const speedFrac = Math.min(speed / MAX_SPEED, 1);
+  const endAngle = startAngle + speedFrac * maxAngle;
+
+  c.strokeStyle = NEON_BLUE;
+  c.lineWidth = 4;
+  c.shadowColor = NEON_BLUE;
+  c.shadowBlur = 15;
+  c.beginPath();
+  c.arc(cx, cy, r, startAngle, endAngle);
+  c.stroke();
+  c.shadowBlur = 0;
+
+  // Tick marks
+  for (let i = 0; i <= 10; i++) {
+    const angle = startAngle + (i / 10) * maxAngle;
+    const inner = r - 8;
+    const outer = r + 2;
+    c.strokeStyle = i <= speedFrac * 10 ? 'rgba(39,193,244,0.8)' : 'rgba(255,255,255,0.15)';
+    c.lineWidth = i % 5 === 0 ? 2 : 1;
+    c.beginPath();
+    c.moveTo(cx + Math.cos(angle) * inner, cy + Math.sin(angle) * inner);
+    c.lineTo(cx + Math.cos(angle) * outer, cy + Math.sin(angle) * outer);
+    c.stroke();
+  }
+
+  // Needle
+  const needleAngle = startAngle + speedFrac * maxAngle;
+  c.strokeStyle = '#fff';
+  c.lineWidth = 2;
+  c.shadowColor = '#fff';
+  c.shadowBlur = 5;
+  c.beginPath();
+  c.moveTo(cx, cy);
+  c.lineTo(cx + Math.cos(needleAngle) * (r - 15), cy + Math.sin(needleAngle) * (r - 15));
+  c.stroke();
+  c.shadowBlur = 0;
+
+  // Centre dot
+  c.fillStyle = NEON_BLUE;
+  c.beginPath();
+  c.arc(cx, cy, 4, 0, Math.PI * 2);
+  c.fill();
+
+  // Digital readout
+  const kmh = Math.round(speedFrac * 300);
+  c.fillStyle = '#fff';
+  c.font = 'bold 24px system-ui';
+  c.textAlign = 'center';
+  c.fillText(kmh, cx, cy + 30);
+  c.fillStyle = 'rgba(39,193,244,0.6)';
+  c.font = '9px system-ui';
+  c.letterSpacing = '2px';
+  c.fillText('KM/H', cx, cy + 42);
+}
+
+// --- UPDATE HUD ---
+function updateHUD() {
+  // Position
+  const playerProgress = playerLap * totalSegments + (playerPos / SEG_LENGTH);
+  const positions = aiCars.map(c => c.lap * totalSegments + (c.pos / SEG_LENGTH));
+  positions.push(playerProgress);
+  positions.sort((a, b) => b - a);
+  const pos = positions.indexOf(playerProgress) + 1;
+  const suffixes = ['st', 'nd', 'rd', 'th'];
+  document.getElementById('hud-position').textContent = pos + suffixes[pos - 1];
+
+  // Lap
+  document.getElementById('hud-lap').textContent = `${Math.min(playerLap + 1, TOTAL_LAPS)} / ${TOTAL_LAPS}`;
+
+  // Time
+  document.getElementById('hud-time').textContent = formatTime(raceTime);
+
+  // Speed
+  const kmh = Math.round((playerSpeed / MAX_SPEED) * 300);
+  document.getElementById('hud-speed').textContent = `${kmh} km/h`;
+
+  // Speedometer
+  drawSpeedometer(playerSpeed);
+}
+
+// --- MAIN LOOP ---
+function gameLoop(timestamp) {
+  const dt = lastTS ? Math.min(timestamp - lastTS, 33) : 16;
+  lastTS = timestamp;
+
+  if (gameState === 'racing') {
+    raceTime += dt;
+
+    // --- PLAYER UPDATE ---
+    const speedRatio = playerSpeed / MAX_SPEED;
+
+    if (keys['ArrowUp'] || keys['w'] || keys['W']) {
+      playerSpeed += ACCEL * (dt / 16);
+    } else if (keys['ArrowDown'] || keys['s'] || keys['S']) {
+      playerSpeed -= BRAKE * (dt / 16);
+    } else {
+      playerSpeed -= NATURAL_DECEL * (dt / 16);
+    }
+
+    // Off-road slowdown
+    if (Math.abs(playerX) > 1.0) {
+      playerSpeed -= OFFROAD_DECEL * (dt / 16);
+    }
+
+    playerSpeed = Math.max(0, Math.min(playerSpeed, MAX_SPEED));
+
+    // Steering
+    const steerAmount = (dt / 16) * 0.04;
+    if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+      playerX -= steerAmount * (1 + speedRatio);
+    }
+    if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+      playerX += steerAmount * (1 + speedRatio);
+    }
+
+    // Centrifugal force from curves
+    const segIdx = Math.floor(playerPos / SEG_LENGTH) % totalSegments;
+    const curve = segments[segIdx].curve;
+    playerX += curve * CENTRIFUGAL * speedRatio * (dt / 16) * 0.015;
+
+    // Clamp off-road
+    if (playerX < -2.5) { playerX = -2.5; playerSpeed *= 0.95; }
+    if (playerX > 2.5) { playerX = 2.5; playerSpeed *= 0.95; }
+
+    // Move forward
+    playerPos += playerSpeed * (dt / 1000);
+
+    // Lap tracking
+    const trackLength = totalSegments * SEG_LENGTH;
+    if (playerPos >= trackLength) {
+      playerPos -= trackLength;
+      playerLap++;
+
+      const lapTime = raceTime - lapStartTime;
+      lapTimes.push(lapTime);
+      if (lapTime < bestLap) bestLap = lapTime;
+      lapStartTime = raceTime;
+
+      if (playerLap >= TOTAL_LAPS) {
+        showFinish();
+      }
+    }
+
+    // --- AI UPDATE ---
+    const trackLen = totalSegments * SEG_LENGTH;
+    for (const ai of aiCars) {
+      if (ai.finished) continue;
+
+      // Wobble steering
+      ai.wobble += (dt / 1000) * 1.5;
+      ai.x += Math.sin(ai.wobble) * 0.002;
+
+      // Drift toward target
+      ai.x += (ai.targetX - ai.x) * 0.005;
+      if (Math.random() < 0.002) ai.targetX = (Math.random() - 0.5) * 0.8;
+
+      // Respond to curves
+      const aiSeg = Math.floor(ai.pos / SEG_LENGTH) % totalSegments;
+      const aiCurve = segments[aiSeg].curve;
+      ai.x -= aiCurve * 0.01 * (ai.speed / MAX_SPEED);
+      ai.x = Math.max(-1.2, Math.min(1.2, ai.x));
+
+      // Vary speed slightly
+      ai.speed += (Math.random() - 0.48) * 50;
+      ai.speed = Math.max(MAX_SPEED * 0.5, Math.min(ai.speed, MAX_SPEED * 0.82));
+
+      ai.pos += ai.speed * (dt / 1000);
+
+      if (ai.pos >= trackLen) {
+        ai.pos -= trackLen;
+        ai.lap++;
+        if (ai.lap >= TOTAL_LAPS) {
+          ai.finished = true;
+          ai.finishTime = raceTime;
+        }
+      }
+    }
+
+    updateHUD();
+  }
+
+  // --- RENDER ---
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // Sky gradient
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, h * 0.5);
+  skyGrad.addColorStop(0, SKY_TOP);
+  skyGrad.addColorStop(1, SKY_BOT);
+  ctx.fillStyle = skyGrad;
+  ctx.fillRect(0, 0, w, h);
+
+  // Stars
+  const time = timestamp * 0.001;
+  for (const star of stars) {
+    const tw = Math.sin(time * 1.5 + star.twinkle) * 0.3 + 0.7;
+    ctx.fillStyle = `rgba(39,193,244,${star.alpha * tw * 0.5})`;
+    ctx.beginPath();
+    ctx.arc(star.x * w, star.y * h, star.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Horizon cityscape glow
+  const horizonY = h * 0.45;
+  for (const b of buildings) {
+    const bx = b.x * w;
+    const bw = b.width * w;
+    const bh = b.height * h * 0.3;
+    ctx.fillStyle = b.glow ? 'rgba(39,193,244,0.04)' : 'rgba(0,20,60,0.5)';
+    ctx.fillRect(bx, horizonY - bh, bw, bh);
+    if (b.glow) {
+      ctx.fillStyle = 'rgba(39,193,244,0.15)';
+      ctx.fillRect(bx + bw * 0.3, horizonY - bh + 5, 2, bh - 10);
+    }
+  }
+
+  // Horizon glow line
+  ctx.fillStyle = 'rgba(39,193,244,0.08)';
+  ctx.fillRect(0, horizonY - 2, w, 4);
+
+  // --- ROAD RENDERING ---
+  const baseSegIdx = Math.floor(playerPos / SEG_LENGTH) % totalSegments;
+  const basePercent = (playerPos % SEG_LENGTH) / SEG_LENGTH;
+
+  // Camera position
+  const camZ = playerPos - CAMERA_DEPTH * CAMERA_HEIGHT;
+  const camY = CAMERA_HEIGHT + segments[baseSegIdx].p.world.y;
+
+  let maxY = h; // clip at bottom of screen, fill upward
+  let prevX = 0, prevY = 0, prevW = 0;
+
+  // Collect AI car render data
+  const aiRenderData = [];
+  const trackLen = totalSegments * SEG_LENGTH;
+
+  for (const ai of aiCars) {
+    // Which segment is the AI in?
+    let relPos = ai.pos - playerPos;
+    if (relPos < -trackLen / 2) relPos += trackLen;
+    if (relPos > trackLen / 2) relPos -= trackLen;
+
+    if (relPos > 0 && relPos < DRAW_DISTANCE * SEG_LENGTH) {
+      const aiSegIdx = Math.floor(relPos / SEG_LENGTH);
+      aiRenderData.push({
+        segIdx: aiSegIdx,
+        x: ai.x,
+        color: ai.color,
+        trailColor: ai.trailColor,
+        relPos: relPos
+      });
+    }
+  }
+
+  // Draw segments back to front
+  const segData = [];
+  for (let n = 0; n < DRAW_DISTANCE; n++) {
+    const idx = (baseSegIdx + n) % totalSegments;
+    const seg = segments[idx];
+
+    // Calculate world z for this segment (accounting for looping)
+    const loopZ = (baseSegIdx + n >= totalSegments) ? totalSegments * SEG_LENGTH : 0;
+
+    // Make a temporary point for projection
+    const p = {
+      world: {
+        x: seg.p.world.x - segments[baseSegIdx].p.world.x - (playerX * ROAD_WIDTH),
+        y: seg.p.world.y,
+        z: (baseSegIdx + n) * SEG_LENGTH + loopZ
+      },
+      camera: {},
+      screen: {}
+    };
+
+    project(p, 0, camY, camZ + (loopZ > 0 ? loopZ : 0), CAMERA_DEPTH);
+
+    segData.push({
+      idx: n,
+      screen: { ...p.screen },
+      color: seg.color,
+      curve: seg.curve
+    });
+  }
+
+  // Render from far to near
+  for (let n = segData.length - 1; n > 0; n--) {
+    const curr = segData[n];
+    const prev = segData[n - 1];
+
+    const sy1 = curr.screen.y;
+    const sy2 = prev.screen.y;
+
+    if (sy1 >= maxY && sy2 >= maxY) continue;
+    if (sy2 < 0) continue;
+
+    // Grass
+    drawPoly(0, sy2, w, 0, sy1, w, curr.color.grass);
+
+    // Rumble strips
+    drawPoly(curr.screen.x, sy1, curr.screen.w * 1.15,
+             prev.screen.x, sy2, prev.screen.w * 1.15,
+             curr.color.rumble);
+
+    // Road surface
+    drawPoly(curr.screen.x, sy1, curr.screen.w,
+             prev.screen.x, sy2, prev.screen.w,
+             curr.color.road);
+
+    // Lane markings
+    if (curr.color.lane !== 'transparent') {
+      const lw1 = curr.screen.w * 0.005;
+      const lw2 = prev.screen.w * 0.005;
+      for (let lane = -1; lane <= 1; lane += 2) {
+        const offset = lane * 0.33;
+        drawPoly(
+          curr.screen.x + curr.screen.w * offset, sy1, lw1,
+          prev.screen.x + prev.screen.w * offset, sy2, lw2,
+          curr.color.lane
+        );
+      }
+    }
+
+    // Edge neon glow
+    const glowW1 = curr.screen.w * 0.01;
+    const glowW2 = prev.screen.w * 0.01;
+    for (let side = -1; side <= 1; side += 2) {
+      drawPoly(
+        curr.screen.x + curr.screen.w * side, sy1, glowW1,
+        prev.screen.x + prev.screen.w * side, sy2, glowW2,
+        NEON_BLUE_DIM
+      );
+    }
+
+    // Draw AI cars in this segment
+    for (const ai of aiRenderData) {
+      if (ai.segIdx === n) {
+        // Interpolate position
+        const scale = curr.screen.scale;
+        const screenX = curr.screen.x + curr.screen.w * ai.x * 0.5;
+        const screenY = curr.screen.y;
+        drawCarSprite(screenX, screenY, Math.min(scale * 35, 3), ai.color, ai.trailColor);
+      }
+    }
+
+    if (sy2 < maxY) maxY = sy2;
+  }
+
+  // Player car (dashboard view)
+  if (gameState === 'racing' || gameState === 'countdown') {
+    drawPlayerCar();
+  }
+
+  requestAnimationFrame(gameLoop);
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>

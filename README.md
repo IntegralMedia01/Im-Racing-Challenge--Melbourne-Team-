@@ -10,8 +10,7 @@ Integral Media Racing Challenge — Build a browser-based racing game using HTML
   - AI tools are encouraged (Claude Code, Cursor, ChatGPT, whatever you like)                                                                                 
                                                             
   ## Presentation                                                                                                                                             
-  - 30 minutes per team member to present your game
-  - Show it off, explain your thinking, and let the judges have a go                                                                                          
+  - 30 minutes per team member to edit the game                                                                                   
                                                             
   ## The Creative Challenge
   This is your chance to think outside the box. The brief says "racing" — but it doesn't say how.

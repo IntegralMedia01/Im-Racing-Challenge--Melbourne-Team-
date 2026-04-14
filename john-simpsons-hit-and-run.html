@@ -1,0 +1,2596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Simpsons Hit & Run — Springfield Circuit</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #70D1FE;
+  overflow: hidden;
+  font-family: 'Arial Black', 'Impact', sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+canvas {
+  display: block;
+  margin: 0 auto;
+}
+#gameCanvas {
+  background: #4a8f3f;
+  image-rendering: pixelated;
+}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+// ============================================================
+// SIMPSONS HIT & RUN — Springfield Circuit Racing Game
+// Single-file browser game — no external dependencies
+// ============================================================
+
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+// Responsive canvas sizing
+function resizeCanvas() {
+  canvas.width = Math.min(window.innerWidth, 1400);
+  canvas.height = Math.min(window.innerHeight, 900);
+}
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+
+// ============================================================
+// CONSTANTS & CONFIGURATION
+// ============================================================
+const SIMPSONS_YELLOW = '#FFD90F';
+const SKY_BLUE = '#70D1FE';
+const ROAD_GREY = '#555555';
+const ROAD_LIGHT = '#666666';
+const GRASS_GREEN = '#4a8f3f';
+const GRASS_LIGHT = '#5aaf4f';
+const TOTAL_LAPS = 3;
+const DONUT_BOOST_SPEED = 1.6;
+const DONUT_BOOST_DURATION = 90; // frames
+const FPS = 60;
+
+// ============================================================
+// GAME STATE
+// ============================================================
+let gameState = 'title'; // title, select, countdown, racing, results
+let selectedCharIndex = 0;
+let playerCharIndex = 0;
+let countdownTimer = 0;
+let countdownPhase = 0;
+let frameCount = 0;
+let raceTime = 0;
+let chaosLevel = 0;
+let dohTimer = 0;
+
+// Notification system
+let notifications = [];
+function showNotification(text, color = '#FFF', duration = 90) {
+  notifications.push({ text, color, timer: duration, maxTimer: duration });
+}
+
+// Input state
+const keys = {};
+window.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+});
+window.addEventListener('keyup', e => {
+  keys[e.code] = false;
+});
+
+// ============================================================
+// AUDIO ENGINE (Web Audio API — no external files)
+// ============================================================
+let audioCtx = null;
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+}
+
+function playTone(freq, duration, type='sine', volume=0.15, detune=0) {
+  if (!audioCtx) return;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.value = freq;
+  osc.detune.value = detune;
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start();
+  osc.stop(audioCtx.currentTime + duration);
+}
+
+function playEngineSound() {
+  playTone(80, 0.08, 'sawtooth', 0.03);
+}
+
+function playCrashSound() {
+  if (!audioCtx) return;
+  const bufferSize = audioCtx.sampleRate * 0.2;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < bufferSize; i++) {
+    data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / bufferSize, 2);
+  }
+  const source = audioCtx.createBufferSource();
+  const gain = audioCtx.createGain();
+  source.buffer = buffer;
+  gain.gain.value = 0.2;
+  source.connect(gain);
+  gain.connect(audioCtx.destination);
+  source.start();
+}
+
+function playDingSound() {
+  playTone(880, 0.1, 'sine', 0.2);
+  setTimeout(() => playTone(1320, 0.15, 'sine', 0.15), 50);
+}
+
+function playCountdownBeep(final) {
+  if (final) {
+    playTone(880, 0.3, 'square', 0.2);
+  } else {
+    playTone(440, 0.2, 'square', 0.15);
+  }
+}
+
+function playHonk() {
+  playTone(280, 0.3, 'sawtooth', 0.15);
+  playTone(350, 0.3, 'sawtooth', 0.1);
+}
+
+function playVictoryFanfare() {
+  const notes = [523, 659, 784, 1047];
+  notes.forEach((n, i) => {
+    setTimeout(() => playTone(n, 0.3, 'square', 0.12), i * 150);
+  });
+}
+
+function playBoostSound() {
+  playTone(300, 0.15, 'sawtooth', 0.1);
+  setTimeout(() => playTone(500, 0.15, 'sawtooth', 0.1), 80);
+  setTimeout(() => playTone(800, 0.2, 'sawtooth', 0.08), 160);
+}
+
+// ============================================================
+// CHARACTER DEFINITIONS
+// ============================================================
+const characters = [
+  {
+    name: 'Homer Simpson',
+    car: 'Pink Sedan',
+    speed: 6, handling: 6, durability: 7,
+    color: '#FFD90F', carColor: '#FF69B4', carColor2: '#FF1493',
+    hairColor: null, shirtColor: '#FFFFFF', pantsColor: '#4169E1',
+    quotes: { crash: ["D'oh!", "Why you little--!"], donut: ["Mmm... donuts", "Woohoo!"], win: ["Woohoo! In your face!"] },
+    drawChar: drawHomer, drawCar: drawPinkSedan
+  },
+  {
+    name: 'Bart Simpson',
+    car: 'Skateboard-Mobile',
+    speed: 8, handling: 5, durability: 3,
+    color: '#FFD90F', carColor: '#FF4500', carColor2: '#FF6347',
+    quotes: { crash: ["Eat my shorts!", "Ay caramba!"], donut: ["Cool, man!", "Don't have a cow, man!"], win: ["Eat my dust!"] },
+    drawChar: drawBart, drawCar: drawSkateboardMobile
+  },
+  {
+    name: 'Marge Simpson',
+    car: 'Orange Wagon',
+    speed: 5, handling: 8, durability: 6,
+    color: '#FFD90F', carColor: '#FF8C00', carColor2: '#FF7F00',
+    quotes: { crash: ["Hmmmm...", "Homer!"], donut: ["Oh my!", "Well, alright..."], win: ["That was... exciting!"] },
+    drawChar: drawMarge, drawCar: drawOrangeWagon
+  },
+  {
+    name: 'Lisa Simpson',
+    car: 'Eco Cruiser',
+    speed: 4, handling: 9, durability: 5,
+    color: '#FFD90F', carColor: '#32CD32', carColor2: '#228B22',
+    quotes: { crash: ["This is so degrading", "I'll show them!"], donut: ["Intellectually stimulating!", "For science!"], win: ["Knowledge wins!"] },
+    drawChar: drawLisa, drawCar: drawEcoCruiser
+  },
+  {
+    name: 'Krusty the Clown',
+    car: 'Clown Car',
+    speed: 9, handling: 3, durability: 4,
+    color: '#FFFFFF', carColor: '#FF0000', carColor2: '#FFD700',
+    quotes: { crash: ["What the--?!", "Hey hey!"], donut: ["Huh huh huh!", "Hey hey!"], win: ["Hey hey hey!"] },
+    drawChar: drawKrusty, drawCar: drawClownCar
+  },
+  {
+    name: 'Mr. Burns',
+    car: 'Luxury Cruiser',
+    speed: 3, handling: 5, durability: 10,
+    color: '#D3D3B0', carColor: '#1a1a1a', carColor2: '#333333',
+    quotes: { crash: ["Smithers!", "Release the hounds!"], donut: ["Excellent...", "Smithers, fetch!"], win: ["Excellent..."] },
+    drawChar: drawBurns, drawCar: drawLuxuryCar
+  },
+  {
+    name: 'Ned Flanders',
+    car: 'Beige Minivan',
+    speed: 6, handling: 7, durability: 7,
+    color: '#FFD90F', carColor: '#D2B48C', carColor2: '#C4A67A',
+    quotes: { crash: ["Hi-diddly-ho!", "Well sir!"], donut: ["Okily dokily!", "Bless this donut!"], win: ["Praise the Lord!"] },
+    drawChar: drawNed, drawCar: drawBeigeMinivan
+  },
+  {
+    name: 'Chief Wiggum',
+    car: 'Police Cruiser',
+    speed: 5, handling: 5, durability: 8,
+    color: '#FFD90F', carColor: '#1E3A5F', carColor2: '#2E5A8F',
+    special: 'arrest',
+    quotes: { crash: ["Bake 'em away, toys!", "Suspect is hatless!"], donut: ["I'm on the case!", "Evidence... yum!"], win: ["Book 'em, Lou!"] },
+    drawChar: drawWiggum, drawCar: drawPoliceCar
+  }
+];
+
+// ============================================================
+// CHARACTER DRAWING FUNCTIONS (pixel art style on canvas)
+// ============================================================
+function drawHomer(ctx, x, y, size) {
+  const s = size / 40;
+  // Head
+  ctx.fillStyle = '#FFD90F';
+  ctx.beginPath(); ctx.arc(x, y - 8*s, 12*s, 0, Math.PI*2); ctx.fill();
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 4*s, y - 10*s, 4*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4*s, y - 10*s, 4*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000000';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 10*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 5*s, y - 10*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+  // Mouth
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = s;
+  ctx.beginPath(); ctx.arc(x + 1*s, y - 4*s, 4*s, 0.1, Math.PI - 0.1); ctx.stroke();
+  // Hair strands
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 2*s;
+  ctx.beginPath(); ctx.moveTo(x - 4*s, y - 19*s); ctx.lineTo(x - 2*s, y - 22*s); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 0*s, y - 19*s); ctx.lineTo(x + 2*s, y - 22*s); ctx.stroke();
+  // Body
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(x - 10*s, y + 2*s, 20*s, 14*s);
+  ctx.fillStyle = '#4169E1';
+  ctx.fillRect(x - 10*s, y + 16*s, 20*s, 10*s);
+  // 5 o'clock shadow
+  ctx.fillStyle = 'rgba(100,100,200,0.2)';
+  ctx.beginPath(); ctx.arc(x + 1*s, y - 1*s, 6*s, 0, Math.PI*2); ctx.fill();
+}
+
+function drawBart(ctx, x, y, size) {
+  const s = size / 40;
+  // Head
+  ctx.fillStyle = '#FFD90F';
+  ctx.beginPath(); ctx.arc(x, y - 6*s, 10*s, 0, Math.PI*2); ctx.fill();
+  // Spiky hair
+  ctx.fillStyle = '#FFD90F';
+  for (let i = -3; i <= 3; i++) {
+    ctx.beginPath();
+    ctx.moveTo(x + i*4*s - 2*s, y - 14*s);
+    ctx.lineTo(x + i*4*s, y - 24*s);
+    ctx.lineTo(x + i*4*s + 2*s, y - 14*s);
+    ctx.fill();
+  }
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 8*s, 3.5*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3*s, y - 8*s, 3.5*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 2*s, y - 8*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4*s, y - 8*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  // Mouth
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = s;
+  ctx.beginPath(); ctx.arc(x, y - 2*s, 3*s, 0, Math.PI); ctx.stroke();
+  // Body
+  ctx.fillStyle = '#FF4500';
+  ctx.fillRect(x - 8*s, y + 3*s, 16*s, 12*s);
+  ctx.fillStyle = '#4169E1';
+  ctx.fillRect(x - 8*s, y + 15*s, 16*s, 8*s);
+}
+
+function drawMarge(ctx, x, y, size) {
+  const s = size / 40;
+  // Hair (tall blue beehive)
+  ctx.fillStyle = '#1E90FF';
+  ctx.beginPath();
+  ctx.moveTo(x - 8*s, y - 8*s);
+  ctx.quadraticCurveTo(x - 10*s, y - 35*s, x, y - 42*s);
+  ctx.quadraticCurveTo(x + 10*s, y - 35*s, x + 8*s, y - 8*s);
+  ctx.fill();
+  // Head
+  ctx.fillStyle = '#FFD90F';
+  ctx.beginPath(); ctx.arc(x, y - 4*s, 10*s, 0, Math.PI*2); ctx.fill();
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 6*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3*s, y - 6*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 2*s, y - 6*s, 1*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4*s, y - 6*s, 1*s, 0, Math.PI*2); ctx.fill();
+  // Necklace
+  ctx.fillStyle = '#FF0000';
+  ctx.beginPath(); ctx.arc(x, y + 4*s, 2*s, 0, Math.PI*2); ctx.fill();
+  // Body (green dress)
+  ctx.fillStyle = '#228B22';
+  ctx.fillRect(x - 8*s, y + 5*s, 16*s, 20*s);
+}
+
+function drawLisa(ctx, x, y, size) {
+  const s = size / 40;
+  // Head
+  ctx.fillStyle = '#FFD90F';
+  ctx.beginPath(); ctx.arc(x, y - 6*s, 9*s, 0, Math.PI*2); ctx.fill();
+  // Spiky hair (star-shaped)
+  ctx.fillStyle = '#FFD90F';
+  for (let i = 0; i < 8; i++) {
+    const angle = (i / 8) * Math.PI * 2 - Math.PI/2;
+    ctx.beginPath();
+    ctx.moveTo(x + Math.cos(angle - 0.3) * 8*s, y - 6*s + Math.sin(angle - 0.3) * 8*s);
+    ctx.lineTo(x + Math.cos(angle) * 16*s, y - 6*s + Math.sin(angle) * 16*s);
+    ctx.lineTo(x + Math.cos(angle + 0.3) * 8*s, y - 6*s + Math.sin(angle + 0.3) * 8*s);
+    ctx.fill();
+  }
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 7*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3*s, y - 7*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 2*s, y - 7*s, 1*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4*s, y - 7*s, 1*s, 0, Math.PI*2); ctx.fill();
+  // Necklace
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x, y + 2*s, 1.5*s, 0, Math.PI*2); ctx.fill();
+  // Body (red dress)
+  ctx.fillStyle = '#FF0000';
+  ctx.fillRect(x - 7*s, y + 3*s, 14*s, 18*s);
+}
+
+function drawKrusty(ctx, x, y, size) {
+  const s = size / 40;
+  // Green hair puffs
+  ctx.fillStyle = '#00AA00';
+  ctx.beginPath(); ctx.arc(x - 10*s, y - 12*s, 7*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 10*s, y - 12*s, 7*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x, y - 18*s, 6*s, 0, Math.PI*2); ctx.fill();
+  // White face
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x, y - 5*s, 11*s, 0, Math.PI*2); ctx.fill();
+  // Big red nose
+  ctx.fillStyle = '#FF0000';
+  ctx.beginPath(); ctx.arc(x, y - 3*s, 5*s, 0, Math.PI*2); ctx.fill();
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 5*s, y - 9*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 5*s, y - 9*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 4*s, y - 9*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 6*s, y - 9*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  // Big smile
+  ctx.strokeStyle = '#FF0000';
+  ctx.lineWidth = 2*s;
+  ctx.beginPath(); ctx.arc(x, y - 1*s, 7*s, 0.2, Math.PI - 0.2); ctx.stroke();
+  // Body
+  ctx.fillStyle = '#FFD700';
+  ctx.fillRect(x - 9*s, y + 5*s, 18*s, 15*s);
+}
+
+function drawBurns(ctx, x, y, size) {
+  const s = size / 40;
+  // Head (gaunt, grey)
+  ctx.fillStyle = '#D3D3B0';
+  ctx.beginPath(); ctx.ellipse(x, y - 6*s, 9*s, 11*s, 0, 0, Math.PI*2); ctx.fill();
+  // Eyes (beady)
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 9*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3*s, y - 9*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 2.5*s, y - 9*s, 1*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3.5*s, y - 9*s, 1*s, 0, Math.PI*2); ctx.fill();
+  // Nose (pointy)
+  ctx.fillStyle = '#D3D3B0';
+  ctx.beginPath();
+  ctx.moveTo(x, y - 6*s);
+  ctx.lineTo(x + 4*s, y - 2*s);
+  ctx.lineTo(x, y - 1*s);
+  ctx.fill();
+  // Sinister grin
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = s;
+  ctx.beginPath(); ctx.arc(x, y + 1*s, 4*s, 0.2, Math.PI - 0.2); ctx.stroke();
+  // Body (suit)
+  ctx.fillStyle = '#333';
+  ctx.fillRect(x - 8*s, y + 5*s, 16*s, 18*s);
+  ctx.fillStyle = '#FFD700';
+  ctx.fillRect(x - 1*s, y + 5*s, 2*s, 18*s); // tie
+}
+
+function drawNed(ctx, x, y, size) {
+  const s = size / 40;
+  // Head
+  ctx.fillStyle = '#FFD90F';
+  ctx.beginPath(); ctx.arc(x, y - 6*s, 10*s, 0, Math.PI*2); ctx.fill();
+  // Brown hair
+  ctx.fillStyle = '#8B4513';
+  ctx.beginPath();
+  ctx.arc(x, y - 10*s, 10*s, Math.PI + 0.3, -0.3);
+  ctx.fill();
+  // Mustache
+  ctx.fillStyle = '#8B4513';
+  ctx.beginPath();
+  ctx.ellipse(x - 4*s, y - 1*s, 4*s, 2*s, 0, 0, Math.PI*2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x + 4*s, y - 1*s, 4*s, 2*s, 0, 0, Math.PI*2);
+  ctx.fill();
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3*s, y - 8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 2*s, y - 8*s, 1*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4*s, y - 8*s, 1*s, 0, Math.PI*2); ctx.fill();
+  // Glasses
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 1.5*s;
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 8*s, 4*s, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x + 3*s, y - 8*s, 4*s, 0, Math.PI*2); ctx.stroke();
+  // Body (green sweater)
+  ctx.fillStyle = '#228B22';
+  ctx.fillRect(x - 9*s, y + 3*s, 18*s, 18*s);
+}
+
+function drawWiggum(ctx, x, y, size) {
+  const s = size / 40;
+  // Head (fat, round)
+  ctx.fillStyle = '#FFD90F';
+  ctx.beginPath(); ctx.arc(x, y - 4*s, 12*s, 0, Math.PI*2); ctx.fill();
+  // Police hat
+  ctx.fillStyle = '#1E3A5F';
+  ctx.fillRect(x - 12*s, y - 14*s, 24*s, 6*s);
+  ctx.fillRect(x - 8*s, y - 20*s, 16*s, 6*s);
+  // Badge on hat
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath(); ctx.arc(x, y - 17*s, 2.5*s, 0, Math.PI*2); ctx.fill();
+  // Eyes
+  ctx.fillStyle = '#FFFFFF';
+  ctx.beginPath(); ctx.arc(x - 4*s, y - 6*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4*s, y - 6*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#000';
+  ctx.beginPath(); ctx.arc(x - 3*s, y - 6*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 5*s, y - 6*s, 1.2*s, 0, Math.PI*2); ctx.fill();
+  // Chins / mouth
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = s;
+  ctx.beginPath(); ctx.arc(x, y + 2*s, 3*s, 0, Math.PI); ctx.stroke();
+  // Body (blue uniform)
+  ctx.fillStyle = '#1E3A5F';
+  ctx.fillRect(x - 11*s, y + 7*s, 22*s, 18*s);
+  // Badge
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.moveTo(x + 5*s, y + 10*s);
+  ctx.lineTo(x + 8*s, y + 12*s);
+  ctx.lineTo(x + 7*s, y + 16*s);
+  ctx.lineTo(x + 5*s, y + 14*s);
+  ctx.lineTo(x + 3*s, y + 16*s);
+  ctx.lineTo(x + 2*s, y + 12*s);
+  ctx.fill();
+}
+
+// ============================================================
+// CAR DRAWING FUNCTIONS
+// ============================================================
+function drawPinkSedan(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  // Body
+  ctx.fillStyle = '#FF69B4';
+  roundRect(ctx, -18*s, -10*s, 36*s, 20*s, 4*s);
+  // Roof
+  ctx.fillStyle = '#FF1493';
+  roundRect(ctx, -8*s, -7*s, 18*s, 14*s, 3*s);
+  // Windshield
+  ctx.fillStyle = 'rgba(150,220,255,0.6)';
+  ctx.fillRect(6*s, -6*s, 4*s, 12*s);
+  // Headlights
+  ctx.fillStyle = '#FFFF00';
+  ctx.fillRect(16*s, -7*s, 3*s, 4*s);
+  ctx.fillRect(16*s, 3*s, 3*s, 4*s);
+  // Wheels
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-14*s, -12*s, 8*s, 3*s);
+  ctx.fillRect(-14*s, 9*s, 8*s, 3*s);
+  ctx.fillRect(6*s, -12*s, 8*s, 3*s);
+  ctx.fillRect(6*s, 9*s, 8*s, 3*s);
+  ctx.restore();
+}
+
+function drawSkateboardMobile(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  // Skateboard deck
+  ctx.fillStyle = '#FF4500';
+  roundRect(ctx, -16*s, -7*s, 32*s, 14*s, 6*s);
+  // Stripe
+  ctx.fillStyle = '#FFD700';
+  ctx.fillRect(-10*s, -2*s, 20*s, 4*s);
+  // Wheels (skateboard style)
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(-12*s, -8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-12*s, 8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(12*s, -8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(12*s, 8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawOrangeWagon(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = '#FF8C00';
+  roundRect(ctx, -20*s, -10*s, 40*s, 20*s, 3*s);
+  ctx.fillStyle = '#FF7F00';
+  roundRect(ctx, -12*s, -7*s, 26*s, 14*s, 2*s);
+  ctx.fillStyle = 'rgba(150,220,255,0.6)';
+  ctx.fillRect(8*s, -6*s, 4*s, 12*s);
+  ctx.fillStyle = '#FFFF00';
+  ctx.fillRect(18*s, -6*s, 3*s, 4*s);
+  ctx.fillRect(18*s, 2*s, 3*s, 4*s);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-15*s, -12*s, 8*s, 3*s);
+  ctx.fillRect(-15*s, 9*s, 8*s, 3*s);
+  ctx.fillRect(7*s, -12*s, 8*s, 3*s);
+  ctx.fillRect(7*s, 9*s, 8*s, 3*s);
+  ctx.restore();
+}
+
+function drawEcoCruiser(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = '#32CD32';
+  roundRect(ctx, -16*s, -9*s, 32*s, 18*s, 6*s);
+  ctx.fillStyle = '#228B22';
+  roundRect(ctx, -6*s, -6*s, 16*s, 12*s, 4*s);
+  // Leaf symbol
+  ctx.fillStyle = '#00FF00';
+  ctx.beginPath();
+  ctx.ellipse(-10*s, 0, 4*s, 2*s, 0.3, 0, Math.PI*2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(150,220,255,0.6)';
+  ctx.fillRect(6*s, -5*s, 3*s, 10*s);
+  ctx.fillStyle = '#FFFF00';
+  ctx.fillRect(14*s, -5*s, 3*s, 3*s);
+  ctx.fillRect(14*s, 2*s, 3*s, 3*s);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-12*s, -11*s, 7*s, 3*s);
+  ctx.fillRect(-12*s, 8*s, 7*s, 3*s);
+  ctx.fillRect(5*s, -11*s, 7*s, 3*s);
+  ctx.fillRect(5*s, 8*s, 7*s, 3*s);
+  ctx.restore();
+}
+
+function drawClownCar(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  // Multicolored body
+  ctx.fillStyle = '#FF0000';
+  roundRect(ctx, -14*s, -9*s, 28*s, 18*s, 8*s);
+  ctx.fillStyle = '#FFD700';
+  roundRect(ctx, -8*s, -6*s, 16*s, 12*s, 4*s);
+  // Polka dots
+  ctx.fillStyle = '#0000FF';
+  ctx.beginPath(); ctx.arc(-8*s, -4*s, 2*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(8*s, 4*s, 2*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#00FF00';
+  ctx.beginPath(); ctx.arc(6*s, -4*s, 2*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-6*s, 4*s, 2*s, 0, Math.PI*2); ctx.fill();
+  // Horn on front
+  ctx.fillStyle = '#FF4500';
+  ctx.beginPath();
+  ctx.moveTo(14*s, 0);
+  ctx.lineTo(20*s, -3*s);
+  ctx.lineTo(20*s, 3*s);
+  ctx.fill();
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(-10*s, -10*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(-10*s, 10*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(10*s, -10*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc(10*s, 10*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+}
+
+function drawLuxuryCar(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = '#1a1a1a';
+  roundRect(ctx, -22*s, -11*s, 44*s, 22*s, 3*s);
+  ctx.fillStyle = '#333';
+  roundRect(ctx, -10*s, -8*s, 24*s, 16*s, 2*s);
+  // Chrome details
+  ctx.fillStyle = '#C0C0C0';
+  ctx.fillRect(-22*s, -1*s, 44*s, 2*s);
+  ctx.fillStyle = 'rgba(150,220,255,0.5)';
+  ctx.fillRect(8*s, -7*s, 4*s, 14*s);
+  ctx.fillStyle = '#FFFF00';
+  ctx.fillRect(20*s, -7*s, 3*s, 4*s);
+  ctx.fillRect(20*s, 3*s, 3*s, 4*s);
+  // Taillights
+  ctx.fillStyle = '#FF0000';
+  ctx.fillRect(-23*s, -7*s, 2*s, 4*s);
+  ctx.fillRect(-23*s, 3*s, 2*s, 4*s);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-17*s, -13*s, 9*s, 3*s);
+  ctx.fillRect(-17*s, 10*s, 9*s, 3*s);
+  ctx.fillRect(8*s, -13*s, 9*s, 3*s);
+  ctx.fillRect(8*s, 10*s, 9*s, 3*s);
+  ctx.restore();
+}
+
+function drawBeigeMinivan(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = '#D2B48C';
+  roundRect(ctx, -20*s, -11*s, 40*s, 22*s, 4*s);
+  ctx.fillStyle = '#C4A67A';
+  roundRect(ctx, -14*s, -8*s, 30*s, 16*s, 3*s);
+  ctx.fillStyle = 'rgba(150,220,255,0.6)';
+  ctx.fillRect(10*s, -6*s, 4*s, 12*s);
+  ctx.fillRect(-2*s, -6*s, 4*s, 12*s);
+  ctx.fillStyle = '#FFFF00';
+  ctx.fillRect(18*s, -6*s, 3*s, 4*s);
+  ctx.fillRect(18*s, 2*s, 3*s, 4*s);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-16*s, -13*s, 8*s, 3*s);
+  ctx.fillRect(-16*s, 10*s, 8*s, 3*s);
+  ctx.fillRect(8*s, -13*s, 8*s, 3*s);
+  ctx.fillRect(8*s, 10*s, 8*s, 3*s);
+  ctx.restore();
+}
+
+function drawPoliceCar(ctx, x, y, angle, s) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.fillStyle = '#1E3A5F';
+  roundRect(ctx, -20*s, -10*s, 40*s, 20*s, 3*s);
+  ctx.fillStyle = '#2E5A8F';
+  roundRect(ctx, -10*s, -7*s, 22*s, 14*s, 2*s);
+  // POLICE text stripe
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(-18*s, -2*s, 36*s, 4*s);
+  // Lights on top
+  const flashOn = (frameCount % 30) < 15;
+  ctx.fillStyle = flashOn ? '#FF0000' : '#880000';
+  ctx.beginPath(); ctx.arc(-4*s, -8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = flashOn ? '#0000FF' : '#000088';
+  ctx.beginPath(); ctx.arc(4*s, -8*s, 3*s, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(150,220,255,0.6)';
+  ctx.fillRect(8*s, -6*s, 3*s, 12*s);
+  ctx.fillStyle = '#FFFF00';
+  ctx.fillRect(18*s, -6*s, 3*s, 4*s);
+  ctx.fillRect(18*s, 2*s, 3*s, 4*s);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(-16*s, -12*s, 8*s, 3*s);
+  ctx.fillRect(-16*s, 9*s, 8*s, 3*s);
+  ctx.fillRect(8*s, -12*s, 8*s, 3*s);
+  ctx.fillRect(8*s, 9*s, 8*s, 3*s);
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.fill();
+}
+
+// ============================================================
+// TRACK DEFINITION — Springfield Circuit
+// ============================================================
+// Track is defined as a series of waypoints that form a circuit
+// The road is drawn between these points with a certain width
+const TRACK_ROAD_WIDTH = 90;
+const TRACK_SCALE = 1.0;
+
+// Track waypoints forming a circuit through Springfield landmarks
+const trackWaypoints = [
+  // Start/Finish straight (near Simpson House)
+  { x: 400, y: 2200, landmark: null },
+  { x: 600, y: 2200, landmark: null },
+  { x: 900, y: 2200, landmark: 'start' },
+  { x: 1200, y: 2200, landmark: null },
+  { x: 1500, y: 2200, landmark: null },
+  // Right turn toward Kwik-E-Mart
+  { x: 1700, y: 2100, landmark: null },
+  { x: 1850, y: 1950, landmark: null },
+  { x: 1900, y: 1750, landmark: 'kwik-e-mart' },
+  // North along Kwik-E-Mart strip
+  { x: 1900, y: 1500, landmark: null },
+  { x: 1850, y: 1300, landmark: null },
+  // Curve toward Nuclear Plant
+  { x: 1750, y: 1100, landmark: null },
+  { x: 1600, y: 950, landmark: null },
+  { x: 1500, y: 800, landmark: 'nuclear-plant' },
+  // West past Nuclear Plant
+  { x: 1300, y: 700, landmark: null },
+  { x: 1100, y: 650, landmark: null },
+  // Continue west to Moe's Tavern
+  { x: 900, y: 650, landmark: 'moes' },
+  { x: 700, y: 680, landmark: null },
+  // South curve toward Springfield Elementary
+  { x: 500, y: 750, landmark: null },
+  { x: 350, y: 900, landmark: null },
+  { x: 300, y: 1100, landmark: 'elementary' },
+  // South along Elementary
+  { x: 300, y: 1300, landmark: null },
+  { x: 320, y: 1500, landmark: null },
+  // Curve toward Lard Lad Donuts
+  { x: 350, y: 1700, landmark: 'lard-lad' },
+  { x: 370, y: 1900, landmark: null },
+  // Back to start
+  { x: 380, y: 2050, landmark: null },
+  { x: 400, y: 2200, landmark: null },
+];
+
+// Buildings / Landmarks positioned near the track
+const landmarks = [
+  {
+    id: 'simpson-house', x: 900, y: 2380, w: 120, h: 80,
+    color: '#D2691E', roofColor: '#8B4513', name: 'Simpson House',
+    details: [{ type: 'window', x: 15, y: 20, w: 25, h: 20 }, { type: 'window', x: 55, y: 20, w: 25, h: 20 }, { type: 'door', x: 42, y: 40, w: 20, h: 35 }]
+  },
+  {
+    id: 'kwik-e-mart', x: 2020, y: 1700, w: 130, h: 90,
+    color: '#00AA00', roofColor: '#007700', name: 'Kwik-E-Mart',
+    details: [{ type: 'window', x: 10, y: 30, w: 50, h: 40 }, { type: 'sign', x: 20, y: 5, w: 90, h: 22, text: 'KWIK-E-MART' }]
+  },
+  {
+    id: 'nuclear-plant', x: 1500, y: 580, w: 180, h: 120,
+    color: '#808080', roofColor: '#606060', name: 'Nuclear Plant',
+    details: [{ type: 'tower', x: 30, y: -60, w: 40, h: 60 }, { type: 'tower', x: 110, y: -60, w: 40, h: 60 }]
+  },
+  {
+    id: 'moes', x: 820, y: 500, w: 110, h: 70,
+    color: '#8B0000', roofColor: '#660000', name: "Moe's Tavern",
+    details: [{ type: 'door', x: 40, y: 25, w: 22, h: 38 }, { type: 'sign', x: 15, y: 3, w: 80, h: 18, text: "MOE'S" }]
+  },
+  {
+    id: 'elementary', x: 130, y: 1030, w: 150, h: 100,
+    color: '#CC8800', roofColor: '#AA6600', name: 'Springfield Elementary',
+    details: [{ type: 'door', x: 55, y: 45, w: 25, h: 45 }, { type: 'sign', x: 20, y: 5, w: 110, h: 18, text: 'ELEMENTARY' }, { type: 'window', x: 15, y: 35, w: 25, h: 20 }, { type: 'window', x: 100, y: 35, w: 25, h: 20 }]
+  },
+  {
+    id: 'lard-lad', x: 180, y: 1650, w: 100, h: 80,
+    color: '#FF69B4', roofColor: '#FF1493', name: 'Lard Lad Donuts',
+    details: [{ type: 'donut-sign', x: 25, y: -45, w: 50, h: 50 }, { type: 'door', x: 35, y: 35, w: 20, h: 38 }]
+  }
+];
+
+// Calculate track length and positions
+function getTrackPoint(t) {
+  // t is 0..1 around the circuit
+  const n = trackWaypoints.length;
+  const totalT = t * (n - 1);
+  const idx = Math.floor(totalT);
+  const frac = totalT - idx;
+  const p0 = trackWaypoints[idx % n];
+  const p1 = trackWaypoints[(idx + 1) % n];
+  // Use catmull-rom for smoother curves
+  const p_1 = trackWaypoints[(idx - 1 + n) % n];
+  const p2 = trackWaypoints[(idx + 2) % n];
+  const x = catmullRom(p_1.x, p0.x, p1.x, p2.x, frac);
+  const y = catmullRom(p_1.y, p0.y, p1.y, p2.y, frac);
+  return { x, y };
+}
+
+function catmullRom(p0, p1, p2, p3, t) {
+  const t2 = t * t;
+  const t3 = t2 * t;
+  return 0.5 * (
+    (2 * p1) +
+    (-p0 + p2) * t +
+    (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2 +
+    (-p0 + 3 * p1 - 3 * p2 + p3) * t3
+  );
+}
+
+function getTrackAngle(t) {
+  const dt = 0.001;
+  const p1 = getTrackPoint(t);
+  const p2 = getTrackPoint((t + dt) % 1);
+  return Math.atan2(p2.y - p1.y, p2.x - p1.x);
+}
+
+// Pre-calculate road segments for collision and rendering
+const TRACK_SEGMENTS = 500;
+const trackSegments = [];
+function buildTrackSegments() {
+  for (let i = 0; i < TRACK_SEGMENTS; i++) {
+    const t = i / TRACK_SEGMENTS;
+    const pt = getTrackPoint(t);
+    const angle = getTrackAngle(t);
+    trackSegments.push({ x: pt.x, y: pt.y, angle, t });
+  }
+}
+buildTrackSegments();
+
+// Find closest track position for a point
+function closestTrackT(px, py) {
+  let bestDist = Infinity;
+  let bestT = 0;
+  for (const seg of trackSegments) {
+    const dx = px - seg.x;
+    const dy = py - seg.y;
+    const dist = dx * dx + dy * dy;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestT = seg.t;
+    }
+  }
+  return { t: bestT, dist: Math.sqrt(bestDist) };
+}
+
+function isOnTrack(px, py) {
+  const { dist } = closestTrackT(px, py);
+  return dist < TRACK_ROAD_WIDTH * 0.6;
+}
+
+// ============================================================
+// DONUT COLLECTIBLES
+// ============================================================
+let donuts = [];
+function spawnDonuts() {
+  donuts = [];
+  for (let i = 0; i < 30; i++) {
+    const t = (i / 30 + Math.random() * 0.02) % 1;
+    const pt = getTrackPoint(t);
+    const angle = getTrackAngle(t);
+    const offset = (Math.random() - 0.5) * TRACK_ROAD_WIDTH * 0.6;
+    donuts.push({
+      x: pt.x + Math.cos(angle + Math.PI/2) * offset,
+      y: pt.y + Math.sin(angle + Math.PI/2) * offset,
+      collected: false,
+      respawnTimer: 0,
+      bobPhase: Math.random() * Math.PI * 2
+    });
+  }
+}
+
+// ============================================================
+// RACER CLASS
+// ============================================================
+class Racer {
+  constructor(charIndex, isPlayer = false) {
+    this.charIndex = charIndex;
+    this.char = characters[charIndex];
+    this.isPlayer = isPlayer;
+    // Stats affect gameplay
+    this.maxSpeed = 2.5 + this.char.speed * 0.45;
+    this.accel = 0.04 + this.char.speed * 0.008;
+    this.turnSpeed = 0.025 + this.char.handling * 0.004;
+    this.mass = 0.5 + this.char.durability * 0.1;
+    // Position (will be set at race start)
+    this.x = 0;
+    this.y = 0;
+    this.angle = 0;
+    this.speed = 0;
+    this.vx = 0;
+    this.vy = 0;
+    // Racing state
+    this.trackT = 0;
+    this.lap = 0;
+    this.lastCheckT = 0;
+    this.totalProgress = 0;
+    this.finished = false;
+    this.finishTime = 0;
+    this.position = 1;
+    // Boost
+    this.donutCount = 0;
+    this.boostTimer = 0;
+    // Drift
+    this.drifting = false;
+    this.driftAngle = 0;
+    // Speech bubble
+    this.speechText = '';
+    this.speechTimer = 0;
+    // AI
+    this.aiTargetT = 0;
+    this.aiSteerNoise = 0;
+    this.aiNoiseTimer = 0;
+    this.aiAggressiveness = 0.7 + Math.random() * 0.25;
+    // Arrest ability (Wiggum)
+    this.arrestCooldown = 0;
+    // Collision cooldown
+    this.collisionCooldown = 0;
+    // Stun
+    this.stunTimer = 0;
+    // Particles
+    this.particles = [];
+  }
+
+  showSpeech(type) {
+    const quotes = this.char.quotes[type];
+    if (quotes && quotes.length > 0) {
+      this.speechText = quotes[Math.floor(Math.random() * quotes.length)];
+      this.speechTimer = 120;
+    }
+  }
+
+  update() {
+    if (this.stunTimer > 0) {
+      this.stunTimer--;
+      this.speed *= 0.95;
+      // still apply velocity
+      this.x += this.vx;
+      this.y += this.vy;
+      this.vx *= 0.95;
+      this.vy *= 0.95;
+      return;
+    }
+
+    if (this.boostTimer > 0) this.boostTimer--;
+    if (this.collisionCooldown > 0) this.collisionCooldown--;
+    if (this.arrestCooldown > 0) this.arrestCooldown--;
+    if (this.speechTimer > 0) this.speechTimer--;
+
+    const boostMult = this.boostTimer > 0 ? DONUT_BOOST_SPEED : 1;
+    const currentMaxSpeed = this.maxSpeed * boostMult;
+
+    if (this.isPlayer) {
+      this.updatePlayer(currentMaxSpeed);
+    } else {
+      this.updateAI(currentMaxSpeed);
+    }
+
+    // Off-track penalty
+    if (!isOnTrack(this.x, this.y)) {
+      this.speed *= 0.97;
+    }
+
+    // Apply velocity
+    this.vx = Math.cos(this.angle) * this.speed;
+    this.vy = Math.sin(this.angle) * this.speed;
+
+    if (this.drifting) {
+      const driftVx = Math.cos(this.angle + this.driftAngle) * this.speed * 0.3;
+      const driftVy = Math.sin(this.angle + this.driftAngle) * this.speed * 0.3;
+      this.vx = this.vx * 0.7 + driftVx;
+      this.vy = this.vy * 0.7 + driftVy;
+      // Drift particles
+      if (this.speed > 1 && frameCount % 3 === 0) {
+        this.particles.push({
+          x: this.x - Math.cos(this.angle) * 15,
+          y: this.y - Math.sin(this.angle) * 15,
+          vx: (Math.random() - 0.5) * 2,
+          vy: (Math.random() - 0.5) * 2,
+          life: 20,
+          color: 'rgba(200,200,200,0.5)'
+        });
+      }
+    }
+
+    this.x += this.vx;
+    this.y += this.vy;
+
+    // Boost particles
+    if (this.boostTimer > 0 && frameCount % 2 === 0) {
+      this.particles.push({
+        x: this.x - Math.cos(this.angle) * 20,
+        y: this.y - Math.sin(this.angle) * 20,
+        vx: -Math.cos(this.angle) * 3 + (Math.random() - 0.5) * 2,
+        vy: -Math.sin(this.angle) * 3 + (Math.random() - 0.5) * 2,
+        life: 15,
+        color: '#FFD700'
+      });
+    }
+
+    // Update particles
+    for (let i = this.particles.length - 1; i >= 0; i--) {
+      const p = this.particles[i];
+      p.x += p.vx;
+      p.y += p.vy;
+      p.life--;
+      if (p.life <= 0) this.particles.splice(i, 1);
+    }
+
+    // Track progress
+    const { t } = closestTrackT(this.x, this.y);
+    this.trackT = t;
+
+    // Lap detection
+    const prevProgress = this.totalProgress;
+    if (this.lastCheckT > 0.8 && t < 0.2) {
+      // Crossed start/finish going forward
+      this.lap++;
+      if (this.lap >= TOTAL_LAPS && !this.finished) {
+        this.finished = true;
+        this.finishTime = raceTime;
+        if (this.isPlayer) {
+          playVictoryFanfare();
+          this.showSpeech('win');
+        }
+      } else if (this.isPlayer && this.lap < TOTAL_LAPS) {
+        // Lap complete notification
+        showNotification(`LAP ${this.lap} COMPLETE!`, SIMPSONS_YELLOW, 90);
+        playTone(660, 0.15, 'square', 0.12);
+        setTimeout(() => playTone(880, 0.2, 'square', 0.1), 100);
+        if (this.lap === TOTAL_LAPS - 1) {
+          setTimeout(() => showNotification('FINAL LAP!', '#FF4444', 120), 500);
+        }
+      }
+    } else if (this.lastCheckT < 0.2 && t > 0.8) {
+      // Going backwards
+      this.lap = Math.max(0, this.lap - 1);
+    }
+    this.lastCheckT = t;
+    this.totalProgress = this.lap + t;
+
+    // Donut collection
+    for (const d of donuts) {
+      if (d.collected) continue;
+      const dx = this.x - d.x;
+      const dy = this.y - d.y;
+      if (dx * dx + dy * dy < 25 * 25) {
+        d.collected = true;
+        d.respawnTimer = 600;
+        this.donutCount++;
+        if (this.isPlayer) {
+          playDingSound();
+          this.showSpeech('donut');
+        }
+      }
+    }
+
+    // Wiggum arrest ability
+    if (this.char.special === 'arrest' && !this.isPlayer && this.arrestCooldown <= 0) {
+      for (const r of racers) {
+        if (r === this || r.stunTimer > 0) continue;
+        const dx = this.x - r.x;
+        const dy = this.y - r.y;
+        if (dx * dx + dy * dy < 80 * 80 && Math.random() < 0.002) {
+          r.stunTimer = 60;
+          r.showSpeech('crash');
+          this.arrestCooldown = 600;
+          this.showSpeech('crash');
+        }
+      }
+    }
+  }
+
+  updatePlayer(currentMaxSpeed) {
+    // Acceleration
+    if (keys['ArrowUp'] || keys['KeyW']) {
+      this.speed = Math.min(this.speed + this.accel, currentMaxSpeed);
+    } else if (keys['ArrowDown'] || keys['KeyS']) {
+      this.speed = Math.max(this.speed - this.accel * 1.5, -currentMaxSpeed * 0.3);
+    } else {
+      this.speed *= 0.985;
+    }
+
+    // Steering
+    const steerAmount = this.turnSpeed * (this.speed > 0 ? 1 : -1);
+    if (keys['ArrowLeft'] || keys['KeyA']) {
+      this.angle -= steerAmount;
+    }
+    if (keys['ArrowRight'] || keys['KeyD']) {
+      this.angle += steerAmount;
+    }
+
+    // Drift / handbrake
+    this.drifting = keys['Space'] && Math.abs(this.speed) > 1;
+    if (this.drifting) {
+      if (keys['ArrowLeft'] || keys['KeyA']) this.driftAngle = -0.5;
+      else if (keys['ArrowRight'] || keys['KeyD']) this.driftAngle = 0.5;
+      this.speed *= 0.99;
+    } else {
+      this.driftAngle *= 0.9;
+    }
+
+    // Boost
+    if ((keys['ShiftLeft'] || keys['ShiftRight']) && this.donutCount > 0 && this.boostTimer <= 0) {
+      this.donutCount--;
+      this.boostTimer = DONUT_BOOST_DURATION;
+      playBoostSound();
+    }
+
+    // Horn (+ Wiggum arrest on horn)
+    if (keys['Enter']) {
+      if (!this._hornCooldown || this._hornCooldown <= 0) {
+        playHonk();
+        this._hornCooldown = 30;
+        // Wiggum special: arrest nearby racers
+        if (this.char.special === 'arrest' && this.arrestCooldown <= 0) {
+          for (const r of racers) {
+            if (r === this || r.stunTimer > 0) continue;
+            const dx = this.x - r.x;
+            const dy = this.y - r.y;
+            if (dx * dx + dy * dy < 100 * 100) {
+              r.stunTimer = 60;
+              r.showSpeech('crash');
+              this.arrestCooldown = 300;
+              this.showSpeech('crash');
+              showNotification('ARRESTED!', '#FF0000', 60);
+              break;
+            }
+          }
+        }
+      }
+    }
+    if (this._hornCooldown > 0) this._hornCooldown--;
+
+    // Engine sound
+    if (Math.abs(this.speed) > 0.5 && frameCount % 8 === 0) {
+      playEngineSound();
+    }
+  }
+
+  updateAI(currentMaxSpeed) {
+    // AI follows the track with some noise
+    this.aiNoiseTimer--;
+    if (this.aiNoiseTimer <= 0) {
+      this.aiSteerNoise = (Math.random() - 0.5) * 0.015;
+      this.aiNoiseTimer = 30 + Math.random() * 60;
+    }
+
+    // Rubber-banding: AI gets faster when behind, slightly slower when far ahead
+    let rubberBand = 1.0;
+    if (racers.length > 0 && racers[0].isPlayer) {
+      const player = racers[0];
+      const progressDiff = player.totalProgress - this.totalProgress;
+      if (progressDiff > 0.15) {
+        // AI is behind player — speed up
+        rubberBand = 1.0 + Math.min(progressDiff * 0.5, 0.25);
+      } else if (progressDiff < -0.3) {
+        // AI is way ahead — slow down slightly
+        rubberBand = 0.92;
+      }
+    }
+
+    // Find target point ahead on track
+    const lookAhead = 0.035 + (this.speed / this.maxSpeed) * 0.025;
+    const targetT = (this.trackT + lookAhead) % 1;
+    const target = getTrackPoint(targetT);
+
+    const dx = target.x - this.x;
+    const dy = target.y - this.y;
+    const targetAngle = Math.atan2(dy, dx);
+
+    let angleDiff = targetAngle - this.angle;
+    while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+    while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+
+    // Steer toward target
+    const steerStr = Math.min(Math.abs(angleDiff), this.turnSpeed * 1.1) * Math.sign(angleDiff);
+    this.angle += steerStr + this.aiSteerNoise;
+
+    // Speed control with rubber-banding
+    const effectiveMax = currentMaxSpeed * this.aiAggressiveness * rubberBand;
+    if (Math.abs(angleDiff) > 0.5) {
+      // Slow down for turns
+      this.speed = Math.max(this.speed - this.accel * 0.5, effectiveMax * 0.5);
+    } else {
+      this.speed = Math.min(this.speed + this.accel * this.aiAggressiveness, effectiveMax);
+    }
+
+    // Avoid other racers
+    for (const other of racers) {
+      if (other === this) continue;
+      const odx = other.x - this.x;
+      const ody = other.y - this.y;
+      const oDist = Math.sqrt(odx * odx + ody * ody);
+      if (oDist < 60 && oDist > 0) {
+        // Steer away slightly
+        const avoidAngle = Math.atan2(-ody, -odx);
+        let avoidDiff = avoidAngle - this.angle;
+        while (avoidDiff > Math.PI) avoidDiff -= Math.PI * 2;
+        while (avoidDiff < -Math.PI) avoidDiff += Math.PI * 2;
+        this.angle += avoidDiff * 0.03;
+      }
+    }
+
+    // Use boost if available — more strategic
+    if (this.donutCount > 0 && Math.random() < 0.008 && this.boostTimer <= 0 && Math.abs(angleDiff) < 0.3) {
+      this.donutCount--;
+      this.boostTimer = DONUT_BOOST_DURATION;
+    }
+
+    // Occasional mistake (rare)
+    if (Math.random() < 0.0005) {
+      this.speed *= 0.75;
+    }
+
+    this.drifting = false;
+  }
+
+  draw(ctx, camX, camY) {
+    const sx = this.x - camX;
+    const sy = this.y - camY;
+
+    // Don't draw if off screen
+    if (sx < -100 || sx > canvas.width + 100 || sy < -100 || sy > canvas.height + 100) return;
+
+    // Draw particles
+    for (const p of this.particles) {
+      const px = p.x - camX;
+      const py = p.y - camY;
+      ctx.fillStyle = p.color;
+      ctx.globalAlpha = p.life / 20;
+      ctx.beginPath();
+      ctx.arc(px, py, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Player indicator arrow
+    if (this.isPlayer) {
+      const arrowBob = Math.sin(frameCount * 0.1) * 3;
+      ctx.fillStyle = '#FF0000';
+      ctx.beginPath();
+      ctx.moveTo(sx, sy - 35 + arrowBob);
+      ctx.lineTo(sx - 7, sy - 45 + arrowBob);
+      ctx.lineTo(sx + 7, sy - 45 + arrowBob);
+      ctx.fill();
+      ctx.fillStyle = '#FFF';
+      ctx.font = 'bold 10px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('YOU', sx, sy - 47 + arrowBob);
+    }
+
+    // Draw car
+    const carScale = 0.9;
+    this.char.drawCar(ctx, sx, sy, this.angle, carScale);
+
+    // Stun effect
+    if (this.stunTimer > 0) {
+      ctx.strokeStyle = '#FF0000';
+      ctx.lineWidth = 2;
+      for (let i = 0; i < 5; i++) {
+        const a = (frameCount * 0.2 + i * Math.PI * 2 / 5);
+        const r = 25 + Math.sin(frameCount * 0.3) * 5;
+        ctx.beginPath();
+        ctx.moveTo(sx + Math.cos(a) * (r - 5), sy + Math.sin(a) * (r - 5));
+        ctx.lineTo(sx + Math.cos(a) * (r + 5), sy + Math.sin(a) * (r + 5));
+        ctx.stroke();
+      }
+    }
+
+    // Boost glow
+    if (this.boostTimer > 0) {
+      ctx.strokeStyle = `rgba(255, 200, 0, ${0.3 + Math.sin(frameCount * 0.3) * 0.2})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(sx, sy, 28, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    // Speech bubble
+    if (this.speechTimer > 0 && this.speechText) {
+      const bubbleAlpha = Math.min(1, this.speechTimer / 20);
+      ctx.globalAlpha = bubbleAlpha;
+      ctx.font = 'bold 13px Arial';
+      ctx.fillStyle = '#FFFFFF';
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      const textW = ctx.measureText(this.speechText).width + 20;
+      const bx = sx - textW / 2;
+      const by = sy - 55;
+      ctx.beginPath();
+      roundRectPath(ctx, bx, by, textW, 28, 8);
+      ctx.fill();
+      ctx.stroke();
+      // Tail
+      ctx.beginPath();
+      ctx.moveTo(sx - 5, by + 28);
+      ctx.lineTo(sx, by + 38);
+      ctx.lineTo(sx + 5, by + 28);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#000';
+      ctx.font = 'bold 13px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(this.speechText, sx, by + 19);
+      ctx.globalAlpha = 1;
+    }
+  }
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+}
+
+// ============================================================
+// RACE SETUP
+// ============================================================
+let racers = [];
+let camera = { x: 0, y: 0 };
+
+function setupRace() {
+  racers = [];
+  const startPt = getTrackPoint(0.035);
+  const startAngle = getTrackAngle(0.035);
+
+  for (let i = 0; i < 8; i++) {
+    const isPlayer = i === 0;
+    const charIdx = isPlayer ? playerCharIndex : getAICharIndex(i);
+    const racer = new Racer(charIdx, isPlayer);
+
+    // Grid positions: 2 wide, 4 deep
+    const row = Math.floor(i / 2);
+    const col = i % 2;
+    const along = -row * 50;
+    const across = (col - 0.5) * 45;
+
+    racer.x = startPt.x + Math.cos(startAngle) * along + Math.cos(startAngle + Math.PI / 2) * across;
+    racer.y = startPt.y + Math.sin(startAngle) * along + Math.sin(startAngle + Math.PI / 2) * across;
+    racer.angle = startAngle;
+    racer.trackT = 0.035;
+    racer.lastCheckT = 0.035;
+
+    racers.push(racer);
+  }
+
+  spawnDonuts();
+  raceTime = 0;
+  chaosLevel = 0;
+  dohTimer = 0;
+}
+
+function getAICharIndex(gridPos) {
+  const available = [];
+  for (let i = 0; i < 8; i++) {
+    if (i !== playerCharIndex) available.push(i);
+  }
+  return available[(gridPos - 1) % available.length];
+}
+
+// ============================================================
+// COLLISION DETECTION
+// ============================================================
+function handleCollisions() {
+  for (let i = 0; i < racers.length; i++) {
+    for (let j = i + 1; j < racers.length; j++) {
+      const a = racers[i];
+      const b = racers[j];
+      const dx = a.x - b.x;
+      const dy = a.y - b.y;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const minDist = 35;
+
+      if (dist < minDist && dist > 0) {
+        // Push apart
+        const overlap = minDist - dist;
+        const nx = dx / dist;
+        const ny = dy / dist;
+
+        const totalMass = a.mass + b.mass;
+        const aRatio = b.mass / totalMass;
+        const bRatio = a.mass / totalMass;
+
+        a.x += nx * overlap * aRatio;
+        a.y += ny * overlap * aRatio;
+        b.x -= nx * overlap * bRatio;
+        b.y -= ny * overlap * bRatio;
+
+        // Bounce speeds
+        const relSpeed = Math.abs(a.speed) + Math.abs(b.speed);
+        if (relSpeed > 2 && a.collisionCooldown <= 0 && b.collisionCooldown <= 0) {
+          a.speed *= 0.7;
+          b.speed *= 0.7;
+          a.collisionCooldown = 15;
+          b.collisionCooldown = 15;
+
+          // Crash effects
+          if (a.isPlayer || b.isPlayer) {
+            playCrashSound();
+            const player = a.isPlayer ? a : b;
+            player.showSpeech('crash');
+            chaosLevel = Math.min(chaosLevel + 15, 100);
+          }
+
+          // Collision particles
+          const cx = (a.x + b.x) / 2;
+          const cy = (a.y + b.y) / 2;
+          for (let k = 0; k < 5; k++) {
+            a.particles.push({
+              x: cx, y: cy,
+              vx: (Math.random() - 0.5) * 5,
+              vy: (Math.random() - 0.5) * 5,
+              life: 15,
+              color: '#FFD700'
+            });
+          }
+        }
+
+        // Wiggum arrest on collision
+        if (a.char.special === 'arrest' && b.isPlayer && a.arrestCooldown <= 0) {
+          b.stunTimer = 45;
+          b.showSpeech('crash');
+          a.showSpeech('crash');
+          a.arrestCooldown = 300;
+        } else if (b.char.special === 'arrest' && a.isPlayer && b.arrestCooldown <= 0) {
+          a.stunTimer = 45;
+          a.showSpeech('crash');
+          b.showSpeech('crash');
+          b.arrestCooldown = 300;
+        }
+      }
+    }
+
+    // Building collisions
+    const r = racers[i];
+    for (const lm of landmarks) {
+      if (r.x > lm.x - 10 && r.x < lm.x + lm.w + 10 &&
+          r.y > lm.y - 10 && r.y < lm.y + lm.h + 10) {
+        // Push out of building
+        const cx = lm.x + lm.w / 2;
+        const cy = lm.y + lm.h / 2;
+        const dx = r.x - cx;
+        const dy = r.y - cy;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        r.x += (dx / dist) * 5;
+        r.y += (dy / dist) * 5;
+        r.speed *= 0.6;
+
+        if (r.isPlayer && r.collisionCooldown <= 0) {
+          playCrashSound();
+          r.showSpeech('crash');
+          r.collisionCooldown = 20;
+          chaosLevel = Math.min(chaosLevel + 20, 100);
+        }
+      }
+    }
+  }
+}
+
+// ============================================================
+// CALCULATE POSITIONS
+// ============================================================
+function updatePositions() {
+  const sorted = [...racers].sort((a, b) => {
+    if (a.finished && b.finished) return a.finishTime - b.finishTime;
+    if (a.finished) return -1;
+    if (b.finished) return 1;
+    return b.totalProgress - a.totalProgress;
+  });
+  sorted.forEach((r, i) => r.position = i + 1);
+}
+
+// ============================================================
+// RENDERING
+// ============================================================
+function drawTrack(ctx, camX, camY) {
+  // Draw grass background
+  ctx.fillStyle = GRASS_GREEN;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Grass texture
+  for (let gx = Math.floor(camX / 80) * 80; gx < camX + canvas.width + 80; gx += 80) {
+    for (let gy = Math.floor(camY / 80) * 80; gy < camY + canvas.height + 80; gy += 80) {
+      const hash = (gx * 31 + gy * 17) & 0xFF;
+      if (hash < 40) {
+        ctx.fillStyle = GRASS_LIGHT;
+        ctx.fillRect(gx - camX, gy - camY, 15 + (hash % 20), 8 + (hash % 10));
+      }
+    }
+  }
+
+  // Draw road
+  ctx.strokeStyle = ROAD_GREY;
+  ctx.lineWidth = TRACK_ROAD_WIDTH;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  for (let i = 0; i <= TRACK_SEGMENTS; i++) {
+    const t = (i % TRACK_SEGMENTS) / TRACK_SEGMENTS;
+    const pt = getTrackPoint(t);
+    const sx = pt.x - camX;
+    const sy = pt.y - camY;
+    if (i === 0) ctx.moveTo(sx, sy);
+    else ctx.lineTo(sx, sy);
+  }
+  ctx.closePath();
+  ctx.stroke();
+
+  // Road kerbs (red/white alternating on edges) — use cached segments
+  for (let side = -1; side <= 1; side += 2) {
+    ctx.lineWidth = 6;
+    ctx.setLineDash([10, 10]);
+    ctx.lineDashOffset = 0;
+    ctx.strokeStyle = '#FF0000';
+    ctx.beginPath();
+    for (let i = 0; i < trackSegments.length; i++) {
+      const seg = trackSegments[i];
+      const offset = TRACK_ROAD_WIDTH * 0.48 * side;
+      const sx = seg.x + Math.cos(seg.angle + Math.PI/2) * offset - camX;
+      const sy = seg.y + Math.sin(seg.angle + Math.PI/2) * offset - camY;
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.lineDashOffset = 10;
+    ctx.strokeStyle = '#FFFFFF';
+    ctx.beginPath();
+    for (let i = 0; i < trackSegments.length; i++) {
+      const seg = trackSegments[i];
+      const offset = TRACK_ROAD_WIDTH * 0.48 * side;
+      const sx = seg.x + Math.cos(seg.angle + Math.PI/2) * offset - camX;
+      const sy = seg.y + Math.sin(seg.angle + Math.PI/2) * offset - camY;
+      if (i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+
+  // Road center line (dashed)
+  ctx.strokeStyle = '#FFFF00';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([20, 20]);
+  ctx.beginPath();
+  for (let i = 0; i <= TRACK_SEGMENTS; i++) {
+    const t = (i % TRACK_SEGMENTS) / TRACK_SEGMENTS;
+    const pt = getTrackPoint(t);
+    const sx = pt.x - camX;
+    const sy = pt.y - camY;
+    if (i === 0) ctx.moveTo(sx, sy);
+    else ctx.lineTo(sx, sy);
+  }
+  ctx.closePath();
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Trees and bushes along the track (procedural, deterministic)
+  for (let i = 0; i < 60; i++) {
+    // Use a seeded hash for consistent positions
+    const seed = i * 137 + 42;
+    const treeT = ((seed * 7) % 1000) / 1000;
+    const treePt = getTrackPoint(treeT);
+    const treeAngle = getTrackAngle(treeT);
+    const side = (i % 2 === 0) ? 1 : -1;
+    const dist = TRACK_ROAD_WIDTH * 0.7 + ((seed * 13) % 60) + 20;
+    const tx = treePt.x + Math.cos(treeAngle + Math.PI/2) * side * dist - camX;
+    const ty = treePt.y + Math.sin(treeAngle + Math.PI/2) * side * dist - camY;
+
+    if (tx < -40 || tx > canvas.width + 40 || ty < -40 || ty > canvas.height + 40) continue;
+
+    const treeType = seed % 3;
+    if (treeType === 0) {
+      // Round tree
+      ctx.fillStyle = '#2d6b1e';
+      ctx.beginPath(); ctx.arc(tx, ty - 18, 14, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#3d8b2e';
+      ctx.beginPath(); ctx.arc(tx - 4, ty - 22, 10, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#5B3A1A';
+      ctx.fillRect(tx - 3, ty - 8, 6, 12);
+    } else if (treeType === 1) {
+      // Pine tree
+      ctx.fillStyle = '#1a5c10';
+      ctx.beginPath();
+      ctx.moveTo(tx, ty - 30);
+      ctx.lineTo(tx - 12, ty - 5);
+      ctx.lineTo(tx + 12, ty - 5);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(tx, ty - 22);
+      ctx.lineTo(tx - 10, ty - 2);
+      ctx.lineTo(tx + 10, ty - 2);
+      ctx.fill();
+      ctx.fillStyle = '#5B3A1A';
+      ctx.fillRect(tx - 2, ty - 5, 4, 8);
+    } else {
+      // Bush
+      ctx.fillStyle = '#2a7a1a';
+      ctx.beginPath(); ctx.arc(tx, ty - 5, 10, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#3a9a2a';
+      ctx.beginPath(); ctx.arc(tx + 6, ty - 3, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.beginPath(); ctx.arc(tx - 5, ty - 3, 8, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Start/Finish line
+  const sfPt = getTrackPoint(0.035);
+  const sfAngle = getTrackAngle(0.035);
+  const sfX = sfPt.x - camX;
+  const sfY = sfPt.y - camY;
+  ctx.save();
+  ctx.translate(sfX, sfY);
+  ctx.rotate(sfAngle + Math.PI / 2);
+  // Checkered pattern
+  const checkSize = 8;
+  const checks = 12;
+  for (let r = 0; r < 2; r++) {
+    for (let c = 0; c < checks; c++) {
+      ctx.fillStyle = (r + c) % 2 === 0 ? '#FFF' : '#000';
+      ctx.fillRect(-TRACK_ROAD_WIDTH/2 + c * (TRACK_ROAD_WIDTH/checks), r * checkSize - checkSize, TRACK_ROAD_WIDTH/checks, checkSize);
+    }
+  }
+  ctx.restore();
+
+  // "START / FINISH" banner
+  ctx.fillStyle = 'rgba(0,0,0,0.7)';
+  ctx.font = 'bold 12px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('START / FINISH', sfX, sfY - 18);
+}
+
+function drawLandmarks(ctx, camX, camY) {
+  for (const lm of landmarks) {
+    const lx = lm.x - camX;
+    const ly = lm.y - camY;
+
+    // Skip if offscreen
+    if (lx + lm.w < -50 || lx > canvas.width + 50 || ly + lm.h < -50 || ly > canvas.height + 50) continue;
+
+    // Building body
+    ctx.fillStyle = lm.color;
+    ctx.fillRect(lx, ly, lm.w, lm.h);
+
+    // Roof
+    ctx.fillStyle = lm.roofColor;
+    ctx.beginPath();
+    ctx.moveTo(lx - 5, ly);
+    ctx.lineTo(lx + lm.w / 2, ly - 20);
+    ctx.lineTo(lx + lm.w + 5, ly);
+    ctx.fill();
+
+    // Outline
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(lx, ly, lm.w, lm.h);
+
+    // Details
+    for (const d of lm.details) {
+      if (d.type === 'window') {
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(lx + d.x, ly + d.y, d.w, d.h);
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lx + d.x, ly + d.y, d.w, d.h);
+        // Cross
+        ctx.beginPath();
+        ctx.moveTo(lx + d.x + d.w/2, ly + d.y);
+        ctx.lineTo(lx + d.x + d.w/2, ly + d.y + d.h);
+        ctx.moveTo(lx + d.x, ly + d.y + d.h/2);
+        ctx.lineTo(lx + d.x + d.w, ly + d.y + d.h/2);
+        ctx.stroke();
+      } else if (d.type === 'door') {
+        ctx.fillStyle = '#8B4513';
+        ctx.fillRect(lx + d.x, ly + d.y, d.w, d.h);
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lx + d.x, ly + d.y, d.w, d.h);
+        // Knob
+        ctx.fillStyle = '#FFD700';
+        ctx.beginPath();
+        ctx.arc(lx + d.x + d.w - 5, ly + d.y + d.h/2, 2, 0, Math.PI*2);
+        ctx.fill();
+      } else if (d.type === 'sign') {
+        ctx.fillStyle = '#FFF';
+        ctx.fillRect(lx + d.x, ly + d.y, d.w, d.h);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(lx + d.x, ly + d.y, d.w, d.h);
+        ctx.fillStyle = '#000';
+        ctx.font = 'bold 10px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(d.text, lx + d.x + d.w/2, ly + d.y + d.h - 5);
+      } else if (d.type === 'tower') {
+        // Nuclear cooling tower
+        ctx.fillStyle = '#999';
+        ctx.beginPath();
+        ctx.moveTo(lx + d.x, ly + d.y + d.h);
+        ctx.quadraticCurveTo(lx + d.x + d.w * 0.3, ly + d.y + d.h * 0.3, lx + d.x + d.w * 0.2, ly + d.y);
+        ctx.lineTo(lx + d.x + d.w * 0.8, ly + d.y);
+        ctx.quadraticCurveTo(lx + d.x + d.w * 0.7, ly + d.y + d.h * 0.3, lx + d.x + d.w, ly + d.y + d.h);
+        ctx.fill();
+        ctx.strokeStyle = '#666';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        // Steam
+        if (frameCount % 60 < 40) {
+          ctx.fillStyle = 'rgba(200,200,200,0.4)';
+          const st = Math.sin(frameCount * 0.05) * 5;
+          ctx.beginPath();
+          ctx.arc(lx + d.x + d.w/2 + st, ly + d.y - 15, 10 + Math.sin(frameCount * 0.1) * 3, 0, Math.PI*2);
+          ctx.fill();
+        }
+      } else if (d.type === 'donut-sign') {
+        // Giant donut
+        ctx.fillStyle = '#FF69B4';
+        ctx.beginPath();
+        ctx.arc(lx + d.x + d.w/2, ly + d.y + d.h/2, d.w/2, 0, Math.PI*2);
+        ctx.fill();
+        ctx.fillStyle = lm.color;
+        ctx.beginPath();
+        ctx.arc(lx + d.x + d.w/2, ly + d.y + d.h/2, d.w/4, 0, Math.PI*2);
+        ctx.fill();
+        // Sprinkles
+        const sprinkleColors = ['#FF0', '#0F0', '#00F', '#F00'];
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2 + frameCount * 0.01;
+          const r = d.w * 0.35;
+          ctx.fillStyle = sprinkleColors[i % 4];
+          ctx.fillRect(lx + d.x + d.w/2 + Math.cos(a) * r - 2, ly + d.y + d.h/2 + Math.sin(a) * r - 1, 4, 2);
+        }
+      }
+    }
+
+    // Name label
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(lm.name, lx + lm.w/2, ly + lm.h + 14);
+  }
+}
+
+function drawDonuts(ctx, camX, camY) {
+  for (const d of donuts) {
+    if (d.collected) {
+      if (d.respawnTimer > 0) d.respawnTimer--;
+      if (d.respawnTimer <= 0) d.collected = false;
+      continue;
+    }
+
+    const dx = d.x - camX;
+    const dy = d.y - camY;
+    if (dx < -30 || dx > canvas.width + 30 || dy < -30 || dy > canvas.height + 30) continue;
+
+    const bob = Math.sin(d.bobPhase + frameCount * 0.08) * 3;
+
+    // Donut
+    ctx.fillStyle = '#FF69B4';
+    ctx.beginPath();
+    ctx.arc(dx, dy + bob, 10, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#FFB6C1';
+    ctx.beginPath();
+    ctx.arc(dx, dy + bob, 10, -0.5, Math.PI + 0.5);
+    ctx.fill();
+    ctx.fillStyle = '#FF8C00';
+    ctx.beginPath();
+    ctx.arc(dx, dy + bob, 4, 0, Math.PI * 2);
+    ctx.fill();
+    // Sprinkles
+    ctx.fillStyle = '#FF0';
+    ctx.fillRect(dx - 5, dy + bob - 7, 3, 2);
+    ctx.fillStyle = '#0FF';
+    ctx.fillRect(dx + 3, dy + bob - 6, 3, 2);
+    ctx.fillStyle = '#F0F';
+    ctx.fillRect(dx - 2, dy + bob - 9, 3, 2);
+    // Glow
+    ctx.strokeStyle = `rgba(255, 200, 0, ${0.3 + Math.sin(frameCount * 0.1 + d.bobPhase) * 0.2})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(dx, dy + bob, 14, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function drawHUD(ctx) {
+  const player = racers[0];
+  if (!player) return;
+
+  const hudBg = 'rgba(0, 0, 0, 0.65)';
+  const hudW = 220;
+  const hudH = 150;
+  const hudX = 15;
+  const hudY = 15;
+
+  // Main HUD panel
+  ctx.fillStyle = hudBg;
+  ctx.beginPath();
+  roundRectPath(ctx, hudX, hudY, hudW, hudH, 10);
+  ctx.fill();
+  ctx.strokeStyle = SIMPSONS_YELLOW;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  roundRectPath(ctx, hudX, hudY, hudW, hudH, 10);
+  ctx.stroke();
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 18px Arial';
+
+  // Position
+  const posColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
+  ctx.fillStyle = posColors[player.position - 1] || '#FFF';
+  ctx.font = 'bold 32px Arial Black';
+  const posText = player.position + getOrdinal(player.position);
+  ctx.fillText(posText, hudX + 15, hudY + 38);
+
+  // Lap
+  ctx.fillStyle = '#FFF';
+  ctx.font = 'bold 16px Arial';
+  const displayLap = Math.min(player.lap + 1, TOTAL_LAPS);
+  ctx.fillText(`LAP ${displayLap}/${TOTAL_LAPS}`, hudX + 130, hudY + 35);
+
+  // Speed
+  const speedPct = Math.abs(player.speed / player.maxSpeed);
+  ctx.fillStyle = '#AAA';
+  ctx.font = '13px Arial';
+  ctx.fillText('SPEED', hudX + 15, hudY + 60);
+  // Speed bar
+  ctx.fillStyle = '#333';
+  ctx.fillRect(hudX + 15, hudY + 65, 190, 12);
+  const speedColor = player.boostTimer > 0 ? '#FFD700' : (speedPct > 0.8 ? '#FF4444' : '#44FF44');
+  ctx.fillStyle = speedColor;
+  ctx.fillRect(hudX + 15, hudY + 65, 190 * speedPct, 12);
+
+  // Donuts icon
+  ctx.fillStyle = '#FF69B4';
+  ctx.beginPath(); ctx.arc(hudX + 24, hudY + 94, 7, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.beginPath(); ctx.arc(hudX + 24, hudY + 94, 3, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle = '#FF69B4';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText('x ' + player.donutCount, hudX + 35, hudY + 100);
+
+  // Boost indicator
+  if (player.boostTimer > 0) {
+    ctx.fillStyle = '#FFD700';
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText('BOOST!', hudX + 120, hudY + 100);
+  } else if (player.donutCount > 0) {
+    ctx.fillStyle = '#AAA';
+    ctx.font = '12px Arial';
+    ctx.fillText('[SHIFT] to boost', hudX + 100, hudY + 100);
+  }
+
+  // Time
+  ctx.fillStyle = '#FFF';
+  ctx.font = '14px Arial';
+  const mins = Math.floor(raceTime / 3600);
+  const secs = Math.floor((raceTime % 3600) / 60);
+  const ms = Math.floor(((raceTime % 60) / 60) * 100);
+  ctx.fillText(`TIME: ${mins}:${String(secs).padStart(2,'0')}.${String(ms).padStart(2,'0')}`, hudX + 15, hudY + 125);
+
+  // Controls reminder
+  ctx.fillStyle = '#888';
+  ctx.font = '10px Arial';
+  ctx.fillText('WASD/Arrows: Drive | Space: Drift | Shift: Boost', hudX + 15, hudY + 145);
+
+  // D'OH! Warning (chaos meter)
+  if (chaosLevel > 50) {
+    const flash = Math.sin(frameCount * 0.2) > 0;
+    if (flash) {
+      ctx.fillStyle = 'rgba(255, 0, 0, 0.3)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = '#FF0000';
+      ctx.font = 'bold 60px Arial Black';
+      ctx.textAlign = 'center';
+      ctx.fillText("D'OH!", canvas.width / 2, canvas.height / 2 - 100);
+      ctx.textAlign = 'left';
+    }
+  }
+  if (chaosLevel > 0) chaosLevel = Math.max(0, chaosLevel - 0.3);
+
+  // Notifications (center screen)
+  for (let i = notifications.length - 1; i >= 0; i--) {
+    const n = notifications[i];
+    n.timer--;
+    if (n.timer <= 0) { notifications.splice(i, 1); continue; }
+    const alpha = Math.min(1, n.timer / 20, (n.maxTimer - (n.maxTimer - n.timer)) / 10);
+    const scale = 1 + (1 - n.timer / n.maxTimer) * 0.3;
+    ctx.globalAlpha = Math.min(1, alpha);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height * 0.3 + (notifications.length - 1 - i) * 50);
+    ctx.scale(scale, scale);
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 36px Arial Black';
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 4;
+    ctx.strokeText(n.text, 0, 0);
+    ctx.fillStyle = n.color;
+    ctx.fillText(n.text, 0, 0);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // Mini-map
+  drawMiniMap(ctx);
+}
+
+function drawMiniMap(ctx) {
+  const mmW = 160;
+  const mmH = 140;
+  const mmX = canvas.width - mmW - 15;
+  const mmY = 15;
+  const mmPad = 10;
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+  ctx.beginPath();
+  roundRectPath(ctx, mmX, mmY, mmW, mmH, 8);
+  ctx.fill();
+  ctx.strokeStyle = SIMPSONS_YELLOW;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  roundRectPath(ctx, mmX, mmY, mmW, mmH, 8);
+  ctx.stroke();
+
+  // Find track bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const seg of trackSegments) {
+    minX = Math.min(minX, seg.x);
+    maxX = Math.max(maxX, seg.x);
+    minY = Math.min(minY, seg.y);
+    maxY = Math.max(maxY, seg.y);
+  }
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const scale = Math.min((mmW - mmPad * 2) / rangeX, (mmH - mmPad * 2) / rangeY);
+
+  function mmTransform(wx, wy) {
+    return {
+      x: mmX + mmPad + (wx - minX) * scale,
+      y: mmY + mmPad + (wy - minY) * scale
+    };
+  }
+
+  // Draw track on minimap
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  for (let i = 0; i <= TRACK_SEGMENTS; i++) {
+    const seg = trackSegments[i % TRACK_SEGMENTS];
+    const pt = mmTransform(seg.x, seg.y);
+    if (i === 0) ctx.moveTo(pt.x, pt.y);
+    else ctx.lineTo(pt.x, pt.y);
+  }
+  ctx.closePath();
+  ctx.stroke();
+
+  // Draw racers on minimap
+  for (const r of racers) {
+    const pt = mmTransform(r.x, r.y);
+    ctx.fillStyle = r.isPlayer ? '#FF0000' : r.char.carColor;
+    ctx.beginPath();
+    ctx.arc(pt.x, pt.y, r.isPlayer ? 4 : 3, 0, Math.PI * 2);
+    ctx.fill();
+    if (r.isPlayer) {
+      ctx.strokeStyle = '#FFF';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  }
+}
+
+function getOrdinal(n) {
+  if (n === 1) return 'st';
+  if (n === 2) return 'nd';
+  if (n === 3) return 'rd';
+  return 'th';
+}
+
+// ============================================================
+// TITLE SCREEN
+// ============================================================
+function drawTitleScreen() {
+  // Sky gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#70D1FE');
+  grad.addColorStop(0.6, '#B0E8FF');
+  grad.addColorStop(1, '#4a8f3f');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Springfield skyline
+  drawSkyline(ctx, canvas.width, canvas.height);
+
+  // Clouds
+  drawClouds(ctx, canvas.width);
+
+  // Title
+  ctx.textAlign = 'center';
+
+  // Title shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.font = `bold ${Math.min(canvas.width / 10, 72)}px Arial Black`;
+  ctx.fillText('SIMPSONS', canvas.width / 2 + 3, canvas.height * 0.28 + 3);
+  ctx.font = `bold ${Math.min(canvas.width / 8, 90)}px Arial Black`;
+  ctx.fillText('HIT & RUN', canvas.width / 2 + 4, canvas.height * 0.42 + 4);
+
+  // Title text
+  ctx.fillStyle = SIMPSONS_YELLOW;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 4;
+  ctx.font = `bold ${Math.min(canvas.width / 10, 72)}px Arial Black`;
+  ctx.strokeText('SIMPSONS', canvas.width / 2, canvas.height * 0.28);
+  ctx.fillText('SIMPSONS', canvas.width / 2, canvas.height * 0.28);
+
+  ctx.fillStyle = '#FF4444';
+  ctx.font = `bold ${Math.min(canvas.width / 8, 90)}px Arial Black`;
+  ctx.strokeText('HIT & RUN', canvas.width / 2, canvas.height * 0.42);
+  ctx.fillText('HIT & RUN', canvas.width / 2, canvas.height * 0.42);
+
+  // Subtitle
+  ctx.fillStyle = '#FFF';
+  ctx.font = `bold ${Math.min(canvas.width / 25, 28)}px Arial`;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 3;
+  ctx.strokeText('SPRINGFIELD CIRCUIT', canvas.width / 2, canvas.height * 0.50);
+  ctx.fillText('SPRINGFIELD CIRCUIT', canvas.width / 2, canvas.height * 0.50);
+
+  // Start prompt (blinking)
+  if (Math.sin(frameCount * 0.06) > -0.3) {
+    ctx.fillStyle = SIMPSONS_YELLOW;
+    ctx.font = `bold ${Math.min(canvas.width / 22, 32)}px Arial`;
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.strokeText('Press ENTER to Start', canvas.width / 2, canvas.height * 0.68);
+    ctx.fillText('Press ENTER to Start', canvas.width / 2, canvas.height * 0.68);
+  }
+
+  // Credits
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '14px Arial';
+  ctx.fillText('A browser racing game — Arrow Keys/WASD to Drive', canvas.width / 2, canvas.height * 0.85);
+  ctx.fillText("Made for the IM Team Challenge", canvas.width / 2, canvas.height * 0.90);
+
+  // Animated donut
+  const donutX = canvas.width / 2 + Math.sin(frameCount * 0.03) * 100;
+  const donutY = canvas.height * 0.58 + Math.cos(frameCount * 0.05) * 10;
+  drawBigDonut(ctx, donutX, donutY, 20 + Math.sin(frameCount * 0.04) * 3);
+}
+
+function drawSkyline(ctx, w, h) {
+  const groundY = h * 0.65;
+  ctx.fillStyle = '#2a5f1f';
+  ctx.fillRect(0, groundY, w, h - groundY);
+
+  // Buildings silhouette
+  ctx.fillStyle = 'rgba(0,0,0,0.15)';
+  const buildings = [
+    { x: 0.05, w: 0.08, h: 0.15 },
+    { x: 0.15, w: 0.06, h: 0.22 },
+    { x: 0.22, w: 0.10, h: 0.12 },
+    { x: 0.35, w: 0.05, h: 0.28 },
+    { x: 0.42, w: 0.08, h: 0.18 },
+    { x: 0.55, w: 0.12, h: 0.14 },
+    { x: 0.70, w: 0.06, h: 0.25 },
+    { x: 0.78, w: 0.09, h: 0.16 },
+    { x: 0.88, w: 0.07, h: 0.20 },
+  ];
+  for (const b of buildings) {
+    ctx.fillRect(b.x * w, groundY - b.h * h, b.w * w, b.h * h);
+  }
+
+  // Cooling tower silhouette
+  ctx.beginPath();
+  ctx.moveTo(0.38 * w, groundY);
+  ctx.quadraticCurveTo(0.39 * w, groundY - 0.15 * h, 0.385 * w, groundY - 0.3 * h);
+  ctx.lineTo(0.415 * w, groundY - 0.3 * h);
+  ctx.quadraticCurveTo(0.41 * w, groundY - 0.15 * h, 0.42 * w, groundY);
+  ctx.fill();
+}
+
+function drawClouds(ctx, w) {
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  const cloudPositions = [0.15, 0.45, 0.75, 0.9];
+  for (let i = 0; i < cloudPositions.length; i++) {
+    const cx = ((cloudPositions[i] * w + frameCount * (0.2 + i * 0.1)) % (w + 200)) - 100;
+    const cy = 40 + i * 30 + Math.sin(i * 2.5) * 20;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 25, 0, Math.PI * 2);
+    ctx.arc(cx + 20, cy - 8, 20, 0, Math.PI * 2);
+    ctx.arc(cx + 40, cy, 22, 0, Math.PI * 2);
+    ctx.arc(cx + 15, cy + 5, 18, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawBigDonut(ctx, x, y, r) {
+  ctx.fillStyle = '#FF69B4';
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#FFB6C1';
+  ctx.beginPath();
+  ctx.arc(x, y, r, -0.5, Math.PI + 0.5);
+  ctx.fill();
+  ctx.fillStyle = '#FF8C00';
+  ctx.beginPath();
+  ctx.arc(x, y, r * 0.4, 0, Math.PI * 2);
+  ctx.fill();
+  // Sprinkles
+  const colors = ['#FF0', '#0FF', '#F0F', '#0F0', '#F00'];
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const sr = r * 0.7;
+    ctx.fillStyle = colors[i % colors.length];
+    ctx.save();
+    ctx.translate(x + Math.cos(a) * sr, y + Math.sin(a) * sr);
+    ctx.rotate(a + 1);
+    ctx.fillRect(-3, -1, 6, 2);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+// CHARACTER SELECT SCREEN
+// ============================================================
+function drawCharacterSelect() {
+  // Background
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#1a1a3e');
+  grad.addColorStop(1, '#2d1b69');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Title
+  ctx.textAlign = 'center';
+  ctx.fillStyle = SIMPSONS_YELLOW;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 3;
+  ctx.font = `bold ${Math.min(canvas.width / 16, 48)}px Arial Black`;
+  ctx.strokeText('CHOOSE YOUR DRIVER', canvas.width / 2, 55);
+  ctx.fillText('CHOOSE YOUR DRIVER', canvas.width / 2, 55);
+
+  // Grid layout
+  const cols = 4;
+  const rows = 2;
+  const cardW = Math.min(160, (canvas.width - 80) / cols);
+  const cardH = Math.min(210, (canvas.height - 140) / rows);
+  const gridW = cols * cardW + (cols - 1) * 12;
+  const startX = (canvas.width - gridW) / 2;
+  const startY = 80;
+
+  for (let i = 0; i < 8; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const cx = startX + col * (cardW + 12);
+    const cy = startY + row * (cardH + 15);
+
+    const isSelected = i === selectedCharIndex;
+    const char = characters[i];
+
+    // Card background
+    if (isSelected) {
+      ctx.fillStyle = 'rgba(255, 217, 15, 0.2)';
+      ctx.strokeStyle = SIMPSONS_YELLOW;
+      ctx.lineWidth = 3;
+      // Glow effect
+      ctx.shadowColor = SIMPSONS_YELLOW;
+      ctx.shadowBlur = 15;
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.08)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 1;
+      ctx.shadowBlur = 0;
+    }
+
+    ctx.beginPath();
+    roundRectPath(ctx, cx, cy, cardW, cardH, 8);
+    ctx.fill();
+    ctx.beginPath();
+    roundRectPath(ctx, cx, cy, cardW, cardH, 8);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Character drawing
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(cx, cy, cardW, cardH * 0.5);
+    ctx.clip();
+    char.drawChar(ctx, cx + cardW / 2, cy + cardH * 0.38, cardW * 0.6);
+    ctx.restore();
+
+    // Name
+    ctx.fillStyle = '#FFF';
+    ctx.font = `bold ${Math.min(13, cardW / 10)}px Arial`;
+    ctx.textAlign = 'center';
+    ctx.fillText(char.name, cx + cardW / 2, cy + cardH * 0.56);
+
+    // Car name
+    ctx.fillStyle = '#AAA';
+    ctx.font = `${Math.min(10, cardW / 14)}px Arial`;
+    ctx.fillText(char.car, cx + cardW / 2, cy + cardH * 0.63);
+
+    // Stat bars
+    const barY = cy + cardH * 0.68;
+    const barW = cardW - 24;
+    const barH = 8;
+    const barX = cx + 12;
+    const stats = [
+      { label: 'SPD', value: char.speed, color: '#FF4444' },
+      { label: 'HND', value: char.handling, color: '#44FF44' },
+      { label: 'DUR', value: char.durability, color: '#4444FF' },
+    ];
+
+    stats.forEach((stat, si) => {
+      const sy = barY + si * (barH + 8);
+      ctx.fillStyle = '#AAA';
+      ctx.font = `bold ${Math.min(9, cardW / 16)}px Arial`;
+      ctx.textAlign = 'left';
+      ctx.fillText(stat.label, barX, sy + barH - 1);
+      // Background
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      ctx.fillRect(barX + 28, sy, barW - 28, barH);
+      // Fill
+      ctx.fillStyle = stat.color;
+      ctx.fillRect(barX + 28, sy, (barW - 28) * (stat.value / 10), barH);
+    });
+
+    // Special ability note
+    if (char.special === 'arrest') {
+      ctx.fillStyle = '#FF0';
+      ctx.font = `bold ${Math.min(9, cardW / 16)}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.fillText('★ Arrest: Stun racers!', cx + cardW/2, cy + cardH - 6);
+    }
+  }
+
+  // Instructions
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = '16px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('Arrow Keys to Select  |  ENTER to Confirm', canvas.width / 2, canvas.height - 25);
+}
+
+// ============================================================
+// COUNTDOWN SCREEN
+// ============================================================
+function drawCountdown() {
+  // Draw the race track underneath
+  const player = racers[0];
+  camera.x = player.x - canvas.width / 2;
+  camera.y = player.y - canvas.height / 2;
+  drawTrack(ctx, camera.x, camera.y);
+  drawLandmarks(ctx, camera.x, camera.y);
+  drawDonuts(ctx, camera.x, camera.y);
+  for (const r of racers) r.draw(ctx, camera.x, camera.y);
+
+  // Overlay
+  ctx.fillStyle = 'rgba(0,0,0,0.5)';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Countdown number: phase 1=3, 2=2, 3=1, 4=GO!
+  const displayNum = 4 - countdownPhase;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = displayNum > 0 ? '#FF4444' : '#44FF44';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 5;
+  ctx.font = 'bold 120px Arial Black';
+  const text = displayNum > 0 ? String(displayNum) : 'GO!';
+  const scale = 1 + Math.sin(countdownTimer * 0.15) * 0.1;
+  ctx.save();
+  ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.scale(scale, scale);
+  ctx.strokeText(text, 0, 40);
+  ctx.fillText(text, 0, 40);
+  ctx.restore();
+}
+
+// ============================================================
+// RESULTS SCREEN
+// ============================================================
+function drawResults() {
+  const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  grad.addColorStop(0, '#1a1a3e');
+  grad.addColorStop(1, '#0d0d2b');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Confetti
+  for (let i = 0; i < 50; i++) {
+    const cx = ((i * 37 + frameCount * (1 + i * 0.02)) % (canvas.width + 40)) - 20;
+    const cy = ((i * 53 + frameCount * (0.5 + i * 0.01)) % (canvas.height + 40)) - 20;
+    ctx.fillStyle = ['#FF0','#F0F','#0FF','#F00','#0F0','#FFD700'][i % 6];
+    ctx.globalAlpha = 0.7;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(frameCount * 0.02 + i);
+    ctx.fillRect(-4, -2, 8, 4);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  // Title
+  ctx.textAlign = 'center';
+  ctx.fillStyle = SIMPSONS_YELLOW;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 3;
+  ctx.font = 'bold 48px Arial Black';
+  ctx.strokeText('RACE RESULTS', canvas.width / 2, 60);
+  ctx.fillText('RACE RESULTS', canvas.width / 2, 60);
+
+  // Results table
+  const sorted = [...racers].sort((a, b) => a.position - b.position);
+  const rowH = 48;
+  const startY = 100;
+  const tableW = Math.min(600, canvas.width - 60);
+  const tableX = (canvas.width - tableW) / 2;
+
+  sorted.forEach((r, i) => {
+    const ry = startY + i * rowH;
+    const isPlayer = r.isPlayer;
+
+    ctx.fillStyle = isPlayer ? 'rgba(255, 217, 15, 0.15)' : 'rgba(255,255,255,0.05)';
+    ctx.fillRect(tableX, ry, tableW, rowH - 4);
+
+    if (isPlayer) {
+      ctx.strokeStyle = SIMPSONS_YELLOW;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(tableX, ry, tableW, rowH - 4);
+    }
+
+    // Position
+    const posColors = ['#FFD700', '#C0C0C0', '#CD7F32'];
+    ctx.fillStyle = posColors[i] || '#FFF';
+    ctx.font = 'bold 24px Arial Black';
+    ctx.textAlign = 'center';
+    ctx.fillText(`${i + 1}${getOrdinal(i + 1)}`, tableX + 40, ry + 32);
+
+    // Character name
+    ctx.fillStyle = isPlayer ? SIMPSONS_YELLOW : '#FFF';
+    ctx.font = 'bold 18px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(r.char.name + (isPlayer ? ' (YOU)' : ''), tableX + 80, ry + 28);
+
+    // Car
+    ctx.fillStyle = '#888';
+    ctx.font = '12px Arial';
+    ctx.fillText(r.char.car, tableX + 80, ry + 42);
+
+    // Time
+    ctx.fillStyle = '#FFF';
+    ctx.font = '16px Arial';
+    ctx.textAlign = 'right';
+    if (r.finished) {
+      const t = r.finishTime;
+      const mins = Math.floor(t / 3600);
+      const secs = Math.floor((t % 3600) / 60);
+      const ms = Math.floor(((t % 60) / 60) * 100);
+      ctx.fillText(`${mins}:${String(secs).padStart(2,'0')}.${String(ms).padStart(2,'0')}`, tableX + tableW - 20, ry + 32);
+    } else {
+      ctx.fillStyle = '#888';
+      ctx.fillText('DNF', tableX + tableW - 20, ry + 32);
+    }
+  });
+
+  // Play Again
+  if (Math.sin(frameCount * 0.06) > -0.3) {
+    ctx.fillStyle = SIMPSONS_YELLOW;
+    ctx.font = 'bold 24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText('Press ENTER to Play Again', canvas.width / 2, canvas.height - 40);
+  }
+}
+
+// ============================================================
+// MAIN GAME LOOP
+// ============================================================
+let lastEnter = false;
+let lastLeft = false;
+let lastRight = false;
+let lastUp = false;
+let lastDown = false;
+
+function gameLoop() {
+  requestAnimationFrame(gameLoop);
+  frameCount++;
+
+  const enterPressed = keys['Enter'] && !lastEnter;
+  const leftPressed = (keys['ArrowLeft'] || keys['KeyA']) && !lastLeft;
+  const rightPressed = (keys['ArrowRight'] || keys['KeyD']) && !lastRight;
+  const upPressed = (keys['ArrowUp'] || keys['KeyW']) && !lastUp;
+  const downPressed = (keys['ArrowDown'] || keys['KeyS']) && !lastDown;
+
+  lastEnter = !!keys['Enter'];
+  lastLeft = !!(keys['ArrowLeft'] || keys['KeyA']);
+  lastRight = !!(keys['ArrowRight'] || keys['KeyD']);
+  lastUp = !!(keys['ArrowUp'] || keys['KeyW']);
+  lastDown = !!(keys['ArrowDown'] || keys['KeyS']);
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  switch (gameState) {
+    case 'title':
+      drawTitleScreen();
+      if (enterPressed) {
+        initAudio();
+        gameState = 'select';
+        selectedCharIndex = 0;
+        playTone(440, 0.1, 'square', 0.1);
+      }
+      break;
+
+    case 'select':
+      drawCharacterSelect();
+      if (leftPressed) {
+        selectedCharIndex = (selectedCharIndex - 1 + 8) % 8;
+        playTone(330, 0.05, 'square', 0.08);
+      }
+      if (rightPressed) {
+        selectedCharIndex = (selectedCharIndex + 1) % 8;
+        playTone(330, 0.05, 'square', 0.08);
+      }
+      if (upPressed) {
+        selectedCharIndex = (selectedCharIndex - 4 + 8) % 8;
+        playTone(330, 0.05, 'square', 0.08);
+      }
+      if (downPressed) {
+        selectedCharIndex = (selectedCharIndex + 4) % 8;
+        playTone(330, 0.05, 'square', 0.08);
+      }
+      if (enterPressed) {
+        playerCharIndex = selectedCharIndex;
+        setupRace();
+        gameState = 'countdown';
+        countdownTimer = 0;
+        countdownPhase = 0;
+        playTone(660, 0.15, 'square', 0.12);
+      }
+      break;
+
+    case 'countdown':
+      countdownTimer++;
+      // Beeps at 1s, 2s, 3s intervals, then GO at 3.5s, start at 4s
+      if (countdownTimer === 1) { playCountdownBeep(false); countdownPhase = 1; }
+      else if (countdownTimer === 60) { playCountdownBeep(false); countdownPhase = 2; }
+      else if (countdownTimer === 120) { playCountdownBeep(false); countdownPhase = 3; }
+      else if (countdownTimer === 180) { playCountdownBeep(true); countdownPhase = 4; }
+      drawCountdown();
+      if (countdownTimer > 220) {
+        gameState = 'racing';
+      }
+      break;
+
+    case 'racing':
+      raceTime++;
+
+      // Update all racers
+      for (const r of racers) {
+        r.update();
+      }
+
+      // Collisions
+      handleCollisions();
+
+      // Update positions
+      updatePositions();
+
+      // Respawn donuts
+      for (const d of donuts) {
+        if (d.collected && d.respawnTimer > 0) {
+          d.respawnTimer--;
+          if (d.respawnTimer <= 0) d.collected = false;
+        }
+      }
+
+      // Camera follows player with look-ahead
+      const player = racers[0];
+      const lookAheadX = Math.cos(player.angle) * player.speed * 15;
+      const lookAheadY = Math.sin(player.angle) * player.speed * 15;
+      const targetCamX = player.x + lookAheadX - canvas.width / 2;
+      const targetCamY = player.y + lookAheadY - canvas.height / 2;
+      camera.x += (targetCamX - camera.x) * 0.08;
+      camera.y += (targetCamY - camera.y) * 0.08;
+
+      // Draw everything
+      drawTrack(ctx, camera.x, camera.y);
+      drawLandmarks(ctx, camera.x, camera.y);
+      drawDonuts(ctx, camera.x, camera.y);
+
+      // Sort racers by Y for proper draw order
+      const drawOrder = [...racers].sort((a, b) => a.y - b.y);
+      for (const r of drawOrder) {
+        r.draw(ctx, camera.x, camera.y);
+      }
+
+      drawHUD(ctx);
+
+      // Check if all racers finished or if player finished and enough time passed
+      const allFinished = racers.every(r => r.finished);
+      const playerFinished = player.finished;
+      if (allFinished || (playerFinished && raceTime - player.finishTime > 300)) {
+        // Mark remaining racers as finished
+        for (const r of racers) {
+          if (!r.finished) {
+            r.finished = true;
+            r.finishTime = raceTime;
+          }
+        }
+        updatePositions();
+        gameState = 'results';
+      }
+      break;
+
+    case 'results':
+      drawResults();
+      if (enterPressed) {
+        gameState = 'title';
+      }
+      break;
+  }
+}
+
+// Start the game
+gameLoop();
+
+// Touch controls for mobile (basic)
+let touchStartX = 0;
+let touchStartY = 0;
+canvas.addEventListener('touchstart', e => {
+  initAudio();
+  const t = e.touches[0];
+  touchStartX = t.clientX;
+  touchStartY = t.clientY;
+
+  if (gameState === 'title' || gameState === 'results') {
+    keys['Enter'] = true;
+    setTimeout(() => { keys['Enter'] = false; }, 100);
+  }
+  if (gameState === 'select') {
+    if (t.clientX < canvas.width / 2) {
+      keys['ArrowLeft'] = true;
+      setTimeout(() => { keys['ArrowLeft'] = false; }, 100);
+    } else {
+      keys['ArrowRight'] = true;
+      setTimeout(() => { keys['ArrowRight'] = false; }, 100);
+    }
+  }
+  e.preventDefault();
+});
+
+canvas.addEventListener('touchmove', e => {
+  if (gameState !== 'racing') return;
+  const t = e.touches[0];
+  const dx = t.clientX - touchStartX;
+  const dy = t.clientY - touchStartY;
+
+  keys['ArrowLeft'] = dx < -20;
+  keys['ArrowRight'] = dx > 20;
+  keys['ArrowUp'] = dy < -20;
+  keys['ArrowDown'] = dy > 20;
+  e.preventDefault();
+});
+
+canvas.addEventListener('touchend', e => {
+  if (gameState === 'racing') {
+    keys['ArrowLeft'] = false;
+    keys['ArrowRight'] = false;
+    keys['ArrowUp'] = false;
+    keys['ArrowDown'] = false;
+  }
+  if (gameState === 'select' && e.changedTouches[0].clientY > canvas.height * 0.8) {
+    keys['Enter'] = true;
+    setTimeout(() => { keys['Enter'] = false; }, 100);
+  }
+  e.preventDefault();
+});
+</script>
+</body>
+</html>

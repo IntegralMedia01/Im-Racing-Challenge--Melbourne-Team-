@@ -237,6 +237,15 @@
     30% { transform: translate(-50%, -50%) scale(1.2); opacity: 1; }
     100% { transform: translate(-50%, -50%) scale(1); opacity: 0; }
   }
+
+  @keyframes itemPulse {
+    0%, 100% { transform: scale(1); box-shadow: none; }
+    50% { transform: scale(1.06); }
+  }
+
+  #hud-powerup-item.has-item {
+    animation: itemPulse 0.7s ease-in-out infinite;
+  }
 </style>
 </head>
 <body>
@@ -259,6 +268,10 @@
   <div class="hud-item">
     <div class="hud-label">Speed</div>
     <div class="hud-value" id="hud-speed">0</div>
+  </div>
+  <div class="hud-item" id="hud-powerup-item">
+    <div class="hud-label">Item · SPACE</div>
+    <div class="hud-value" id="hud-powerup" style="font-size:14px;letter-spacing:1px;transition:color 0.2s;">---</div>
   </div>
 </div>
 
@@ -284,6 +297,10 @@
     <div class="control-key">
       <div class="key-box">&#9654;</div>
       <div class="key-label">Steer Right</div>
+    </div>
+    <div class="control-key">
+      <div class="key-box" style="width:80px;font-size:12px;letter-spacing:1px;">SPACE</div>
+      <div class="key-label">Use Item</div>
     </div>
   </div>
 </div>
@@ -320,18 +337,21 @@ const minimapCtx = minimapCanvas.getContext('2d');
 // --- TRACK DEFINITION ---
 // The track is defined as a series of waypoints forming a loop
 const trackPoints = [
-  { x: 400, y: 200 },
-  { x: 700, y: 150 },
-  { x: 1000, y: 200 },
-  { x: 1200, y: 350 },
-  { x: 1250, y: 550 },
-  { x: 1150, y: 750 },
-  { x: 950, y: 850 },
-  { x: 700, y: 900 },
-  { x: 450, y: 850 },
-  { x: 250, y: 700 },
-  { x: 150, y: 500 },
-  { x: 200, y: 300 },
+  { x: 700,  y: 400 },   // start/finish
+  { x: 1200, y: 300 },   // main straight
+  { x: 1850, y: 270 },   // extends straight
+  { x: 2250, y: 390 },   // sweeping right entry
+  { x: 2430, y: 650 },   // tight hairpin apex
+  { x: 2280, y: 920 },   // hairpin exit
+  { x: 1980, y: 1100 },  // back section entry
+  { x: 1560, y: 1220 },  // long back straight
+  { x: 1120, y: 1270 },  // wide sweeper
+  { x: 720,  y: 1210 },  // sweeper continues
+  { x: 400,  y: 1060 },  // left hairpin entry
+  { x: 190,  y: 840 },   // left hairpin apex
+  { x: 170,  y: 570 },   // chicane section
+  { x: 320,  y: 370 },   // chicane exit
+  { x: 510,  y: 300 },   // back to main straight
 ];
 
 const TRACK_WIDTH = 120;
@@ -430,6 +450,15 @@ const startPoint = trackSpline[startIdx];
 const startNormal = getTrackNormal(startIdx);
 const startAngle = getTrackAngle(startIdx);
 
+// --- CHECKPOINTS ---
+// Three invisible gates at ~25%, 50%, 75% of the lap.
+// All three must be crossed in forward order before the finish line counts.
+const CHECKPOINT_INDICES = [
+  Math.floor(trackSpline.length * 0.25),
+  Math.floor(trackSpline.length * 0.50),
+  Math.floor(trackSpline.length * 0.75),
+];
+
 // --- CAR CLASS ---
 class Car {
   constructor(color, glowColor, isPlayer = false, startOffset = 0) {
@@ -468,6 +497,19 @@ class Car {
     // Trail
     this.trail = [];
     this.trailTimer = 0;
+
+    // Power-up state
+    this.heldPowerup = null;
+    this.activePowerupType = null;
+    this.powerupTimer = 0;
+    this.speedMultiplier = 1;
+    this.shieldActive = false;
+    this.spinTimer = 0;
+    this.slowTimer = 0;
+    this.aiPowerupDelay = 0;
+
+    // Checkpoint validation (prevents reverse-lap exploit)
+    this.nextCheckpoint = 0; // must pass CP 0,1,2 in order before finish counts
   }
 
   reset(startOffset) {
@@ -485,6 +527,16 @@ class Car {
     this.lapStartTime = 0;
     this.trail = [];
     this.aiTargetIdx = (idx + 20) % trackSpline.length;
+
+    this.heldPowerup = null;
+    this.activePowerupType = null;
+    this.powerupTimer = 0;
+    this.speedMultiplier = 1;
+    this.shieldActive = false;
+    this.spinTimer = 0;
+    this.slowTimer = 0;
+    this.aiPowerupDelay = 0;
+    this.nextCheckpoint = 0;
   }
 
   update(dt, keys) {
@@ -495,7 +547,47 @@ class Car {
       return;
     }
 
+    // Tick active power-up timer
+    if (this.powerupTimer > 0) {
+      this.powerupTimer -= dt;
+      if (this.powerupTimer <= 0) {
+        this.powerupTimer = 0;
+        this.activePowerupType = null;
+        this.speedMultiplier = 1;
+        this.shieldActive = false;
+      }
+    }
+
+    // Tick slow debuff (ink bomb)
+    if (this.slowTimer > 0) this.slowTimer -= dt;
+
     const closest = getClosestTrackPoint(this.x, this.y);
+
+    // Spin-out overrides all controls
+    if (this.spinTimer > 0) {
+      this.spinTimer -= dt;
+      this.angle += 0.18;
+      this.speed *= 0.93;
+      this.x += Math.cos(this.angle) * this.speed;
+      this.y += Math.sin(this.angle) * this.speed;
+      this.updateProgress(closest);
+      this.trailTimer += dt;
+      if (this.trailTimer > 16 && Math.abs(this.speed) > 0.5) {
+        this.trailTimer = 0;
+        this.trail.push({
+          x: this.x - Math.cos(this.angle) * this.height * 0.4,
+          y: this.y - Math.sin(this.angle) * this.height * 0.4,
+          alpha: 0.6,
+          size: 3 + Math.abs(this.speed) * 0.5
+        });
+      }
+      for (let i = this.trail.length - 1; i >= 0; i--) {
+        this.trail[i].alpha -= 0.008;
+        if (this.trail[i].alpha <= 0) this.trail.splice(i, 1);
+      }
+      return;
+    }
+
     const onTrack = closest.dist < TRACK_WIDTH * 0.65;
 
     if (this.isPlayer) {
@@ -516,19 +608,19 @@ class Car {
       }
     } else {
       // AI driving
-      this.updateAI(closest);
+      this.updateAI(dt, closest);
     }
 
-    // Apply friction
-    if (onTrack) {
+    // Apply friction (shield bypasses off-track penalty)
+    if (onTrack || this.shieldActive) {
       this.speed *= (1 - this.friction);
     } else {
       this.speed *= (1 - this.offTrackFriction);
-      this.maxSpeed = this.isPlayer ? 5.5 : 5.0 + Math.random() * 0.8;
     }
 
-    // Clamp speed
-    this.speed = Math.max(-1.5, Math.min(this.speed, this.maxSpeed));
+    // Effective max speed (power-up multiplier × slow debuff)
+    const effMax = this.maxSpeed * this.speedMultiplier * (this.slowTimer > 0 ? 0.45 : 1);
+    this.speed = Math.max(-1.5, Math.min(this.speed, effMax));
 
     // Move
     this.x += Math.cos(this.angle) * this.speed;
@@ -556,7 +648,7 @@ class Car {
     }
   }
 
-  updateAI(closest) {
+  updateAI(dt, closest) {
     // Navigate toward target point on track with offset
     const target = trackSpline[this.aiTargetIdx];
     const targetNormal = getTrackNormal(this.aiTargetIdx);
@@ -586,19 +678,42 @@ class Car {
       this.aiTargetIdx = (this.aiTargetIdx + 8 + Math.floor(Math.random() * 5)) % trackSpline.length;
       this.aiOffset = (Math.random() - 0.5) * TRACK_WIDTH * 0.4;
     }
+
+    // Use held power-up after random delay
+    if (this.heldPowerup) {
+      this.aiPowerupDelay -= dt;
+      if (this.aiPowerupDelay <= 0) {
+        activatePowerup(this);
+      }
+    }
   }
 
   updateProgress(closest) {
+    const prev = this.lastCheckpoint;
+    this.lastCheckpoint = closest.index;
+    this.progress = closest.index;
+
+    // Advance through each intermediate checkpoint in forward order.
+    // A checkpoint is crossed forward when the spline index moves from
+    // just before it to just after it (with a tolerance window).
+    if (this.nextCheckpoint < CHECKPOINT_INDICES.length) {
+      const cpIdx = CHECKPOINT_INDICES[this.nextCheckpoint];
+      const window = 20; // spline points of tolerance either side
+      const wasBelow = prev < cpIdx + window;
+      const nowAtOrPast = closest.index >= cpIdx - window && closest.index <= cpIdx + window * 3;
+      if (wasBelow && nowAtOrPast && closest.index > prev - window) {
+        this.nextCheckpoint++;
+      }
+    }
+
+    // Finish line: only count if all three checkpoints were passed this lap.
     const quarterTrack = Math.floor(trackSpline.length / 4);
     const halfTrack = Math.floor(trackSpline.length / 2);
+    const crossedFinish = prev > halfTrack && closest.index < quarterTrack;
 
-    // Check if crossed start/finish line
-    const prevCheckpoint = this.lastCheckpoint;
-    this.lastCheckpoint = closest.index;
-
-    // Detect lap completion — must have gone past halfway
-    if (prevCheckpoint > halfTrack && closest.index < quarterTrack && this.progress > halfTrack) {
+    if (crossedFinish && this.nextCheckpoint >= CHECKPOINT_INDICES.length) {
       this.lap++;
+      this.nextCheckpoint = 0;
 
       if (this.isPlayer) {
         const lapTime = raceTime - this.lapStartTime;
@@ -612,8 +727,6 @@ class Car {
         this.finishTime = raceTime;
       }
     }
-
-    this.progress = closest.index;
   }
 
   getOverallProgress() {
@@ -636,16 +749,34 @@ class Car {
     ctx.translate(sx, sy);
     ctx.rotate(this.angle + Math.PI / 2);
 
-    // Glow
-    ctx.shadowColor = this.glowColor;
-    ctx.shadowBlur = 20;
-
     // Car body
     const w = this.width;
     const h = this.height;
 
+    // Boost / rocket exhaust flames
+    if (this.speedMultiplier > 1 && this.speed > 1) {
+      ctx.save();
+      const flameColor = this.activePowerupType === 'rocket' ? '255,85,0' : '255,215,0';
+      const flameLen = 10 + Math.random() * 14 * (this.speedMultiplier - 1);
+      ctx.shadowColor = `rgb(${flameColor})`;
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = `rgba(${flameColor},0.85)`;
+      ctx.beginPath();
+      ctx.moveTo(-w * 0.35, h * 0.38);
+      ctx.lineTo(0, h * 0.38 + flameLen);
+      ctx.lineTo(w * 0.35, h * 0.38);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // Glow (star flashes colour)
+    const isStarFlash = this.activePowerupType === 'star' && Math.floor(Date.now() / 120) % 2 === 0;
+    ctx.shadowColor = isStarFlash ? 'rgb(255,255,0)' : this.glowColor;
+    ctx.shadowBlur = isStarFlash ? 35 : 20;
+
     // Main body
-    ctx.fillStyle = this.color;
+    ctx.fillStyle = isStarFlash ? '#ffff44' : this.color;
     ctx.beginPath();
     ctx.moveTo(0, -h / 2);
     ctx.lineTo(w / 2, -h / 4);
@@ -689,6 +820,33 @@ class Car {
     ctx.fillRect(-w / 3, -h / 2, 3, 4);
     ctx.fillRect(w / 3 - 3, -h / 2, 3, 4);
 
+    // Shield / star halo
+    if (this.shieldActive) {
+      ctx.save();
+      const sc = this.activePowerupType === 'star' ? '255,255,0' : '0,191,255';
+      ctx.strokeStyle = `rgba(${sc},0.75)`;
+      ctx.lineWidth = 2.5;
+      ctx.shadowColor = `rgb(${sc})`;
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w * 1.15, h * 0.72, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Ink-slow purple aura
+    if (this.slowTimer > 0) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(155,89,182,0.65)';
+      ctx.lineWidth = 2;
+      ctx.shadowColor = 'rgb(155,89,182)';
+      ctx.shadowBlur = 14;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, w * 1.25, h * 0.78, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.shadowBlur = 0;
     ctx.restore();
   }
@@ -701,6 +859,7 @@ window.addEventListener('keydown', e => {
 
   if (e.key === ' ') {
     if (gameState === 'menu') startCountdown();
+    else if (gameState === 'racing') activatePowerup(player);
     else if (gameState === 'finished') restartRace();
   }
 });
@@ -754,6 +913,208 @@ function spawnParticles(x, y, color, count = 5) {
     });
   }
 }
+
+// --- POWER-UPS ---
+
+const POWERUP_DEFS = [
+  { id: 'boost',  label: 'BOOST',    color: '#FFD700', particleColor: '255,215,0',  duration: 3000 },
+  { id: 'rocket', label: 'ROCKET',   color: '#FF5500', particleColor: '255,85,0',   duration: 2000 },
+  { id: 'shield', label: 'SHIELD',   color: '#00BFFF', particleColor: '0,191,255',  duration: 5000 },
+  { id: 'banana', label: 'BANANA',   color: '#FFE600', particleColor: '255,230,0',  duration: 0    },
+  { id: 'ink',    label: 'INK BOMB', color: '#9B59B6', particleColor: '155,89,182', duration: 0    },
+  { id: 'star',   label: 'STAR!',    color: '#FFFF00', particleColor: '255,255,80', duration: 4000 },
+];
+
+// Evenly spaced spawn points around the 450-point spline (15 waypoints × 30 segments)
+const POWERUP_SPAWN_INDICES = [45, 135, 225, 315, 405];
+let powerupItems = [];   // rotating ? boxes on the track
+let droppedHazards = []; // banana peels placed by players/AI
+
+function initPowerups() {
+  powerupItems = POWERUP_SPAWN_INDICES.map(splineIdx => ({
+    splineIdx,
+    active: true,
+    respawnTimer: 0,
+  }));
+  droppedHazards = [];
+}
+
+function activatePowerup(car) {
+  if (!car.heldPowerup || car.spinTimer > 0) return;
+  const def = POWERUP_DEFS.find(d => d.id === car.heldPowerup);
+  if (!def) return;
+
+  car.heldPowerup = null;
+
+  switch (def.id) {
+    case 'boost':
+      car.activePowerupType = 'boost';
+      car.speedMultiplier = 1.8;
+      car.powerupTimer = def.duration;
+      car.speed = car.maxSpeed * 1.8; // immediate speed kick
+      spawnParticles(car.x, car.y, def.particleColor, 12);
+      break;
+
+    case 'rocket':
+      car.activePowerupType = 'rocket';
+      car.speedMultiplier = 2.6;
+      car.powerupTimer = def.duration;
+      car.speed = car.maxSpeed * 2.6; // dramatic instant burst
+      spawnParticles(car.x, car.y, def.particleColor, 16);
+      break;
+
+    case 'shield':
+      car.activePowerupType = 'shield';
+      car.shieldActive = true;
+      car.powerupTimer = def.duration;
+      spawnParticles(car.x, car.y, def.particleColor, 10);
+      break;
+
+    case 'star':
+      car.activePowerupType = 'star';
+      car.speedMultiplier = 2.0;
+      car.shieldActive = true;
+      car.powerupTimer = def.duration;
+      car.speed = car.maxSpeed * 2.0; // immediate speed kick
+      spawnParticles(car.x, car.y, def.particleColor, 18);
+      break;
+
+    case 'banana':
+      // Drop a peel behind the car
+      droppedHazards.push({
+        x: car.x - Math.cos(car.angle) * 32,
+        y: car.y - Math.sin(car.angle) * 32,
+        active: true,
+      });
+      spawnParticles(car.x, car.y, def.particleColor, 8);
+      break;
+
+    case 'ink': {
+      // Slow the nearest rival ahead (or behind if in 1st)
+      const sorted = [...allCars].sort((a, b) => b.getOverallProgress() - a.getOverallProgress());
+      const idx = sorted.indexOf(car);
+      const targetIdx = idx === 0 ? 1 : idx - 1;
+      const target = sorted[targetIdx];
+      if (target && target !== car && !target.finished && !target.shieldActive) {
+        target.slowTimer = 3000;
+        spawnParticles(target.x, target.y, def.particleColor, 16);
+      }
+      spawnParticles(car.x, car.y, def.particleColor, 8);
+      break;
+    }
+  }
+}
+
+function updatePowerups(dt) {
+  // Respawn timers for track items
+  for (const item of powerupItems) {
+    if (!item.active) {
+      item.respawnTimer -= dt;
+      if (item.respawnTimer <= 0) item.active = true;
+    }
+  }
+
+  // Pickup detection
+  for (const car of allCars) {
+    if (car.finished || car.heldPowerup) continue;
+    for (const item of powerupItems) {
+      if (!item.active) continue;
+      const sp = trackSpline[item.splineIdx];
+      if (Math.hypot(car.x - sp.x, car.y - sp.y) < 32) {
+        const def = POWERUP_DEFS[Math.floor(Math.random() * POWERUP_DEFS.length)];
+        car.heldPowerup = def.id;
+        item.active = false;
+        item.respawnTimer = 8000;
+        spawnParticles(car.x, car.y, def.particleColor, 10);
+        if (!car.isPlayer) {
+          car.aiPowerupDelay = 900 + Math.random() * 1800;
+        }
+      }
+    }
+  }
+
+  // Hazard (banana peel) collision
+  for (const car of allCars) {
+    if (car.finished || car.spinTimer > 0 || car.shieldActive) continue;
+    for (const hazard of droppedHazards) {
+      if (!hazard.active) continue;
+      if (Math.hypot(car.x - hazard.x, car.y - hazard.y) < 22) {
+        hazard.active = false;
+        car.spinTimer = 1600;
+        car.speed *= 0.25;
+        spawnParticles(car.x, car.y, '255,230,0', 14);
+      }
+    }
+  }
+
+  droppedHazards = droppedHazards.filter(h => h.active);
+}
+
+function drawPowerupItems(camX, camY, timestamp) {
+  for (const item of powerupItems) {
+    if (!item.active) continue;
+    const sp = trackSpline[item.splineIdx];
+    const sx = sp.x - camX;
+    const sy = sp.y - camY;
+    const rot = timestamp * 0.0018;
+    const pulse = 0.88 + Math.sin(timestamp * 0.004) * 0.12;
+    const s = 13 * pulse;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    // Ground ring
+    ctx.beginPath();
+    ctx.arc(0, 0, s + 6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,200,0,0.12)';
+    ctx.fill();
+
+    ctx.rotate(rot);
+    ctx.shadowColor = 'rgba(255,200,0,0.9)';
+    ctx.shadowBlur = 18 * pulse;
+
+    // Outer box
+    ctx.fillStyle = '#b36b00';
+    ctx.fillRect(-s, -s, s * 2, s * 2);
+
+    // Inner face
+    ctx.fillStyle = '#ffcc00';
+    ctx.fillRect(-s + 2, -s + 2, s * 2 - 4, s * 2 - 4);
+
+    // "?" text
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = '#7a4400';
+    ctx.font = `bold ${Math.round(s * 1.3)}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('?', 0, 1);
+
+    ctx.restore();
+  }
+}
+
+function drawHazards(camX, camY) {
+  for (const hazard of droppedHazards) {
+    const sx = hazard.x - camX;
+    const sy = hazard.y - camY;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.shadowColor = 'rgba(255,230,0,0.8)';
+    ctx.shadowBlur = 10;
+    // Banana peel — two overlapping ellipses
+    ctx.fillStyle = '#FFE600';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 11, 5, Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ccb800';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 6, 3, Math.PI / 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+initPowerups();
 
 // --- STARS BACKGROUND ---
 const stars = [];
@@ -818,6 +1179,7 @@ function restartRace() {
   document.getElementById('minimap').classList.remove('visible');
 
   createCars();
+  initPowerups();
 }
 
 function showFinish() {
@@ -1009,6 +1371,29 @@ function updateHUD() {
   // Speed
   const displaySpeed = Math.round(Math.abs(player.speed) * 40);
   document.getElementById('hud-speed').textContent = displaySpeed;
+
+  // Power-up slot
+  const puEl = document.getElementById('hud-powerup');
+  const puItem = document.getElementById('hud-powerup-item');
+  if (puEl && puItem) {
+    let def = null;
+    let label = '---';
+    let active = false;
+    if (player.activePowerupType) {
+      def = POWERUP_DEFS.find(d => d.id === player.activePowerupType);
+      label = def ? def.label + '!' : '---';
+      active = true;
+    } else if (player.heldPowerup) {
+      def = POWERUP_DEFS.find(d => d.id === player.heldPowerup);
+      label = def ? def.label : '---';
+    }
+    puEl.textContent = label;
+    puEl.style.color = def ? def.color : '#888';
+    puItem.style.borderColor = def ? def.color + '88' : 'rgba(39,193,244,0.3)';
+    puItem.style.boxShadow = active && def ? `0 0 14px ${def.color}55` : 'none';
+    if (def && !active) puItem.classList.add('has-item');
+    else puItem.classList.remove('has-item');
+  }
 }
 
 // --- MAIN LOOP ---
@@ -1023,6 +1408,9 @@ function gameLoop(timestamp) {
     for (const car of allCars) {
       car.update(dt, keys);
     }
+
+    // Update power-up pickups, hazards, and respawns
+    updatePowerups(dt);
 
     // Check if player finished
     if (player.finished && gameState === 'racing') {
@@ -1064,6 +1452,10 @@ function gameLoop(timestamp) {
 
   // Draw track
   drawTrack(camX, camY);
+
+  // Draw power-up items and dropped hazards
+  drawPowerupItems(camX, camY, timestamp);
+  drawHazards(camX, camY);
 
   // Draw particles
   for (const p of particles) {
